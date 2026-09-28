@@ -1,0 +1,26 @@
+name = "CutCellMethods"
+uuid = "844582fc-e8cc-4c04-acf7-8b8ea17ba2c5"
+version = "0.1.0"
+authors = ["Mark Lau <mark@tidalflight.com>"]
+
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+CartesianMeshes = "357f21b8-02af-4872-bdb4-87c05a034e47"
+CommonSolve = "38540f10-b2f7-11e9-35d8-d573e4eb0ff2"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MeshLibrary = "2a0e3053-d7ad-441e-be9f-5563ad5a0828"
+Reexport = "189a3867-3050-52da-a836-e630ba90ab69"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+UnPack = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
+
+[compat]
+Adapt = "4.7.1 - 4"
+CartesianMeshes = "0.2.2 - 0.2"
+CommonSolve = "0.2.14 - 0.2"
+KernelAbstractions = "0.9.43 - 0.9"
+LinearAlgebra = "1.12.0 - 1"
+MeshLibrary = "0.4.3 - 0.4"
+Reexport = "1.2.2 - 1"
+StaticArrays = "1.9.22 - 1"
+UnPack = "1.0.2 - 1"

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "242f68b56e868fba4820469bb921c909347f9c47"
+project_hash = "ec38dda4c61aa030b87d311e828e6854bb944785"
 
 [[deps.ADTypes]]
 deps = ["PrecompileTools"]
@@ -291,6 +291,12 @@ git-tree-sha1 = "bbfccac7cab8ded940cce9b086b164bdd87be8f4"
 uuid = "b46f11dc-f210-4604-bfba-323c1ec968cb"
 version = "0.20.0"
 
+[[deps.CoordinateFrames]]
+deps = ["DispatchStructs", "LinearAlgebra", "Reexport", "StaticArrays"]
+git-tree-sha1 = "5411dc6baae6063d2b345ba972a41e91b52f85e6"
+uuid = "6b151760-07a9-416c-be3d-151a0b3bd9c5"
+version = "0.4.0"
+
 [[deps.CoreMath]]
 deps = ["CoreMath_jll"]
 git-tree-sha1 = "8c0480f92b1b1796239156a1b9b1bfb1b39499b4"
@@ -315,7 +321,7 @@ uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
 version = "4.2.0"
 
 [[deps.CutCellMethods]]
-deps = ["Adapt", "CartesianMeshes", "CommonSolve", "KernelAbstractions", "LinearAlgebra", "MeshLibrary", "Reexport", "StaticArrays", "UnPack"]
+deps = ["Adapt", "CartesianMeshes", "CommonSolve", "KernelAbstractions", "LinearAlgebra", "MarchingCubes", "MeshLibrary", "Polyester", "Reexport", "SDFLibrary", "StaticArrays", "StructArrays", "UnPack"]
 path = "."
 uuid = "844582fc-e8cc-4c04-acf7-8b8ea17ba2c5"
 version = "0.1.0"
@@ -434,6 +440,11 @@ version = "0.7.21"
     Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
     Tracker = "9f7883ad-71c0-57eb-9f7f-b5c9e6d3789c"
     Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
+
+[[deps.DispatchStructs]]
+git-tree-sha1 = "1a17e79e171775a680de605d9e328cadfc766724"
+uuid = "505fa09e-b502-456e-89e6-f89af754a982"
+version = "0.1.12"
 
 [[deps.Distances]]
 deps = ["LinearAlgebra", "Statistics", "StatsAPI"]
@@ -914,9 +925,9 @@ version = "0.1.5+0"
 
 [[deps.MPICH_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Hwloc_jll", "JLLWrappers", "Libdl", "MPIPreferences", "TOML"]
-git-tree-sha1 = "07dbec8aab01696edc0151a401a6cdfe95b9b885"
+git-tree-sha1 = "bdbb39057d6897527a702983b5fd5184207d23a2"
 uuid = "7cb0a576-ebde-5e09-9194-50597f1243b4"
-version = "5.0.1+0"
+version = "5.0.2+0"
 
 [[deps.MPIPreferences]]
 deps = ["Libdl", "Preferences"]
@@ -939,6 +950,12 @@ version = "0.5.16"
 git-tree-sha1 = "bcaef4fc7a0cfe2cba636d84cda54b5e4e4ca3cd"
 uuid = "d125e4d3-2237-4719-b19c-fa641b8a4667"
 version = "0.1.8"
+
+[[deps.MarchingCubes]]
+deps = ["PrecompileTools", "StaticArrays"]
+git-tree-sha1 = "0e893025924b6becbae4109f8020ac0e12674b01"
+uuid = "299715c1-40a9-479a-aaf9-4a633d36f717"
+version = "0.1.11"
 
 [[deps.Markdown]]
 deps = ["Base64", "JuliaSyntaxHighlighting", "StyledStrings"]
@@ -1105,17 +1122,19 @@ uuid = "21216c6a-2e73-6563-6e65-726566657250"
 version = "1.6.0"
 
 [[deps.PrettyTables]]
-deps = ["Crayons", "LaTeXStrings", "Markdown", "PrecompileTools", "Printf", "REPL", "Reexport", "StringManipulation", "Tables"]
-git-tree-sha1 = "1b8aa19f229b1cea7fc93874a52e49db6a854450"
+deps = ["Crayons", "LaTeXStrings", "Markdown", "PrecompileTools", "Printf", "REPL", "Reexport", "StringManipulation", "StyledStrings", "Tables"]
+git-tree-sha1 = "99fd8f32ab6728ff205cddd24e2d9ea6cbb498d3"
 uuid = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
-version = "3.4.8"
+version = "3.5.0"
 
     [deps.PrettyTables.extensions]
     PrettyTablesExcelExt = "XLSX"
     PrettyTablesTypstryExt = "Typstry"
+    PrettyTablesWriteDocxExt = "WriteDocx"
 
     [deps.PrettyTables.weakdeps]
     Typstry = "f0ed7684-a786-439e-b1e3-3b82803b501e"
+    WriteDocx = "d049ceea-54ee-41d7-a26f-ba29db3b6599"
     XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 
 [[deps.Printf]]
@@ -1187,6 +1206,12 @@ deps = ["Artifacts", "Bzip2_jll", "CompilerSupportLibraries_jll", "JLLWrappers",
 git-tree-sha1 = "081c66492f9280b4fe7a8bb2628b62ab4b91cc5c"
 uuid = "a8d0f55d-b80e-548d-aff6-1a04c175f0f9"
 version = "7.0.11+0"
+
+[[deps.SDFLibrary]]
+deps = ["Adapt", "Atomix", "CartesianMeshes", "CoordinateFrames", "LinearAlgebra", "MeshLibrary", "Polyester", "Reexport", "StaticArrays", "StructArrays", "UnPack"]
+git-tree-sha1 = "a8e035e1cb617bc7d783065b1c9f2b7e33a5eaa9"
+uuid = "799a1229-100c-4135-9c4d-adbcd2eae49f"
+version = "0.10.0"
 
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
@@ -1311,10 +1336,10 @@ uuid = "7792a7ef-975c-4747-a70f-980b88e8d1da"
 version = "0.5.9"
 
 [[deps.StringManipulation]]
-deps = ["PrecompileTools"]
-git-tree-sha1 = "773065c6e0e903924a9d838259be74338422aef2"
+deps = ["PrecompileTools", "StyledStrings"]
+git-tree-sha1 = "9e3a02d73a8f0a9be04e677dbef758aab40f8bea"
 uuid = "892a3eda-7b42-436c-8928-eab12a02cf0e"
-version = "0.5.0"
+version = "0.6.1"
 
 [[deps.StructArrays]]
 deps = ["ConstructionBase", "DataAPI", "Tables"]

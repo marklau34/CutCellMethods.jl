@@ -152,7 +152,7 @@ mesh_lines(mesh) = [SVector{2,Int32}(e.con) for e in mesh.elements]
     @testset "$name" for (name, loops) in PC_BODIES
         mesh = poly_mesh(loops)
         cache = allocate_cache(PCG, PCM)
-        @test update_cache!(cache, mesh, PCG) === cache
+        @test update_cache!(cache, SDFMesh(mesh), PCG) === cache
         X, lines = mesh_X(mesh), mesh_lines(mesh)
         L = cache.work.lattice
         C = cache.work.cross
@@ -238,10 +238,10 @@ mesh_lines(mesh) = [SVector{2,Int32}(e.con) for e in mesh.elements]
 
     @testset "a whole-cell shift moves every state exactly" begin
         mesh = poly_mesh(PC_BODIES[4].second)
-        c1 = update_cache!(allocate_cache(PCG, PCM), mesh, PCG)
+        c1 = update_cache!(allocate_cache(PCG, PCM), SDFMesh(mesh), PCG)
         sh = (3, -2)
         g2 = CartesianGrid(PCG.x0 - SVector(sh) .* PCG.d, Tuple(PCG.n), PCG.d)
-        c2 = update_cache!(allocate_cache(g2, PCM), mesh, g2)
+        c2 = update_cache!(allocate_cache(g2, PCM), SDFMesh(mesh), g2)
         o = CartesianIndex(sh)
         idx = [ci for ci in CartesianIndices(Tuple(PCG.n)) if checkbounds(Bool, c2.info.status, ci + o)]
         @test all(ci -> c2.info.status[ci + o] == c1.info.status[ci], idx)
@@ -249,76 +249,73 @@ mesh_lines(mesh) = [SVector{2,Int32}(e.con) for e in mesh.elements]
         @test count(==(PL_CUT), c1.info.status) == count(==(PL_CUT), c2.info.status)
     end
 
-    @testset "moving, emptying, and the checks" begin
+    @testset "moving, and the checks" begin
         airfoil = poly_mesh(PC_BODIES[4].second)
-        cache = update_cache!(allocate_cache(PCG, PCM), airfoil, PCG)
+        cache = update_cache!(allocate_cache(PCG, PCM), SDFMesh(airfoil), PCG)
         ncut = count(==(PL_CUT), cache.info.status)
         # The body moves: whatever it covered before and does not now reads as fluid again.
         moved = poly_mesh([[p + PV(0.1, 0.35) for p in PC_BODIES[4].second[1]]])
-        update_cache!(cache, moved, PCG)
-        ref = update_cache!(allocate_cache(PCG, PCM), moved, PCG)
+        update_cache!(cache, SDFMesh(moved), PCG)
+        ref = update_cache!(allocate_cache(PCG, PCM), SDFMesh(moved), PCG)
         @test cache.info.status == ref.info.status
         @test cache.cells.kind == ref.cells.kind
         @test cache.edges.ax.fraction == ref.edges.ax.fraction && cache.edges.ay.fraction == ref.edges.ay.fraction
         # The grid moves by a fraction of a cell: every cell is rewritten for the new origin.
         g2 = CartesianGrid(PCG.x0 + SVector(0.0071, -0.0043), Tuple(PCG.n), PCG.d)
-        update_cache!(cache, moved, g2)
-        ref2 = update_cache!(allocate_cache(g2, PCM), moved, g2)
+        update_cache!(cache, SDFMesh(moved), g2)
+        ref2 = update_cache!(allocate_cache(g2, PCM), SDFMesh(moved), g2)
         @test cache.info.status == ref2.info.status
         @test cache.cells.centroid == ref2.cells.centroid
-        # An empty mesh is no body.
-        update_cache!(cache, Mesh(Point{2,Float64}, Line{Int32}), g2)
-        @test all(==(PL_FLUID), cache.info.status) && all(==(CELL_OUTSIDE), cache.cells.kind)
-        @test all(isone, cache.edges.ax.fraction) && all(isone, cache.edges.ay.fraction)
-        update_cache!(cache, airfoil, PCG)
+        # (No empty-mesh case: an `SDFMesh` cannot be built from an empty mesh.)
+        update_cache!(cache, SDFMesh(airfoil), PCG)
         @test count(==(PL_CUT), cache.info.status) == ncut
 
         @test_throws DimensionMismatch update_cache!(
-            cache, airfoil, CartesianGrid(SVector(-1.0, -1.0), (32, 32), SVector(1 / 16, 1 / 16)))
+            cache, SDFMesh(airfoil), CartesianGrid(SVector(-1.0, -1.0), (32, 32), SVector(1 / 16, 1 / 16)))
         @test_throws ArgumentError update_cache!(
-            cache, airfoil, CartesianGrid(SVector(-1.0, -1.0), (64, 64), SVector(1 / 32, 1 / 31)))
+            cache, SDFMesh(airfoil), CartesianGrid(SVector(-1.0, -1.0), (64, 64), SVector(1 / 32, 1 / 31)))
         @test_throws ArgumentError allocate_cache(CartesianGrid(SVector(0.0, 0.0, 0.0), (4, 4, 4),
                                                                 SVector(0.25, 0.25, 0.25)), PCM)
         # The body must stay a cell clear of the grid's edge.
-        @test_throws ArgumentError update_cache!(cache, poly_mesh(square_pts((0.0, 0.0), 1.95)), PCG)
+        @test_throws ArgumentError update_cache!(cache, SDFMesh(poly_mesh(square_pts((0.0, 0.0), 1.95))), PCG)
         # A mesh that fails validation is rejected, and not remembered as valid.
         bad = poly_mesh(reverse(square_pts((0.0, 0.0), 0.5)))
-        @test_throws ArgumentError update_cache!(cache, bad, PCG)
-        @test_throws ArgumentError update_cache!(cache, bad, PCG)
-        update_cache!(cache, airfoil, PCG)
+        @test_throws ArgumentError update_cache!(cache, SDFMesh(bad), PCG)
+        @test_throws ArgumentError update_cache!(cache, SDFMesh(bad), PCG)
+        update_cache!(cache, SDFMesh(airfoil), PCG)
         @test count(==(PL_CUT), cache.info.status) == ncut
         # Rigid motion keeps the topology; `validate = :always` rechecks the geometry anyway.
         topo = cache.work.topo
-        update_cache!(cache, moved, PCG)
+        update_cache!(cache, SDFMesh(moved), PCG)
         @test cache.work.topo === topo
         always = allocate_cache(PCG, PolylineClippingCutCell(validate=:always))
-        update_cache!(always, airfoil, PCG)
+        update_cache!(always, SDFMesh(airfoil), PCG)
         crossed = poly_mesh([square_pts((0.0, 0.0), 0.5), square_pts((0.3, 0.1), 0.5)])
         # (same connectivity as two separate squares, so only the geometric check can catch it)
         apart = poly_mesh([square_pts((-0.4, 0.0), 0.5), square_pts((0.4, 0.0), 0.5)])
-        update_cache!(always, apart, PCG)
-        @test_throws ArgumentError update_cache!(always, crossed, PCG)
-        update_cache!(cache, apart, PCG)
+        update_cache!(always, SDFMesh(apart), PCG)
+        @test_throws ArgumentError update_cache!(always, SDFMesh(crossed), PCG)
+        update_cache!(cache, SDFMesh(apart), PCG)
         # :topology trusts the cached loops (the cut of an invalid body is then garbage, but it is
         # not a validation error) ...
         @test try
             with_logger(NullLogger()) do     # it warns that it could not walk the crossed cells
-                update_cache!(cache, crossed, PCG)
+                update_cache!(cache, SDFMesh(crossed), PCG)
             end
             true
         catch e
             !(e isa ArgumentError && occursin("loops 1 and 2", e.msg))
         end
         reset_topology!(cache)
-        @test_throws ArgumentError update_cache!(cache, crossed, PCG)   # ... until told not to
+        @test_throws ArgumentError update_cache!(cache, SDFMesh(crossed), PCG)   # ... until told not to
     end
 
     @testset "element type" begin
         # A Float32 grid on the same (dyadic) lattice makes the same decisions.
         g32 = CartesianGrid(SVector(-1.0f0, -1.0f0), (64, 64), SVector(1.0f0 / 32, 1.0f0 / 32))
         mesh = poly_mesh(PC_BODIES[5].second)
-        c32 = update_cache!(allocate_cache(g32, PCM), mesh, g32)
-        c64 = update_cache!(allocate_cache(PCG, PCM), mesh, PCG)
+        c32 = update_cache!(allocate_cache(g32, PCM), SDFMesh(mesh), g32)
+        c64 = update_cache!(allocate_cache(PCG, PCM), SDFMesh(mesh), PCG)
         @test eltype(c32.cells) === CutCellData{2,Float32,4,1}
         @test c32.info.status == c64.info.status
         @test c32.cells.kind == c64.cells.kind
@@ -328,8 +325,8 @@ mesh_lines(mesh) = [SVector{2,Int32}(e.con) for e in mesh.elements]
         @testset "GPU agrees with the host" begin
             g32 = CartesianGrid(SVector(-1.0f0, -1.0f0), (64, 64), SVector(1.0f0 / 32, 1.0f0 / 32))
             mesh = poly_mesh(PC_BODIES[5].second)
-            host = update_cache!(allocate_cache(g32, PCM), mesh, g32)
-            dev = update_cache!(allocate_cache(g32, PCM; backend=Main.CUDABackend()), mesh, g32)
+            host = update_cache!(allocate_cache(g32, PCM), SDFMesh(mesh), g32)
+            dev = update_cache!(allocate_cache(g32, PCM; backend=Main.CUDABackend()), SDFMesh(mesh), g32)
             @test Array(dev.info.status) == host.info.status
             @test Array(dev.cells.kind) == host.cells.kind
             @test Array(dev.edges.ax.fraction) == host.edges.ax.fraction

@@ -25,9 +25,10 @@ using CartesianMeshes: direction_axis, direction_sign
 
 # The bodies being cut are SDFLibrary.jl's: the nodal methods sample corners through its
 # `sdf_value` (which also takes any callable `x -> phi`), and the PLIC fit reads `get_sdf` at a
-# cell centroid. Named explicitly rather than `using SDFLibrary` wholesale, so its exports do not
-# land in this namespace.
-using SDFLibrary: SDFLibrary, AbstractSDFGeometry, EmptyGeo, get_sdf, sdf_value
+# cell centroid. The clipping methods cut an `SDFMesh`, whose element sets it carries as a
+# per-element label that survives a move to the GPU. Named explicitly rather than `using
+# SDFLibrary` wholesale, so its exports do not land in this namespace.
+using SDFLibrary: SDFLibrary, AbstractSDFGeometry, EmptyGeo, get_sdf, sdf_value, SDFMesh
 
 # Exact orientation predicates for the polyline clipper's combinatorics, which run on the host.
 # Qualified at every use (`ExactPredicates.orient`), so nothing of it lands in this namespace.

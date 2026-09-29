@@ -42,7 +42,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
                          (SVector(-0.3125, -0.4375, -0.1875), SVector(0.4375, 0.3125, 0.5625)),
                          (SVector(-0.375, -0.5, -0.25), SVector(0.5, 0.25, 0.625)))
             box, V, _ = tm_box(lo, hi; n=3)
-            cache = update_cache!(allocate_cache(g, TCUT), box, g)
+            cache = update_cache!(allocate_cache(g, TCUT), SDFMesh(box), g)
             P = tm_box_planes(lo, hi)
             @test maximum(tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, P))) < 1e-13
             @test sum(1 .- cache.cells.volume_fraction) * prod(g.d) ≈ V rtol = 1e-13
@@ -55,7 +55,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
             SMatrix{3,3,Float64}(1, 0, 0, 0, cosd(17), sind(17), 0, -sind(17), cosd(17))
         lo, hi, t = SVector(-0.45, -0.3, -0.25), SVector(0.4, 0.35, 0.3), SVector(0.013, -0.021, 0.007)
         rbox, V, _ = tm_box(lo, hi; n=3, R=R, t=t)
-        cache = update_cache!(allocate_cache(g, TCUT), rbox, g)
+        cache = update_cache!(allocate_cache(g, TCUT), SDFMesh(rbox), g)
         P = tm_box_planes(lo, hi, R, t)
         @test maximum(tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, P))) < 1e-13
         @test sum(1 .- cache.cells.volume_fraction) * prod(g.d) ≈ V rtol = 1e-13
@@ -70,7 +70,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         kw = (L=1.4, beam=0.9, deadrise=20.0, depth=0.6)
         t = SVector(-0.7, 0.013, -0.3)
         hull, V, _ = tm_prism(; kw..., nx=5, t=t)
-        cache = update_cache!(allocate_cache(g, TCUT), hull, g)
+        cache = update_cache!(allocate_cache(g, TCUT), SDFMesh(hull), g)
         P = tm_prism_planes(; kw..., t=t)
         @test maximum(tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, P))) < 1e-13
         @test sum(1 .- cache.cells.volume_fraction) * prod(g.d) ≈ V rtol = 1e-13
@@ -81,7 +81,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
     @testset "the L-block: concave edges and mixed corners exact" begin
         o = SVector(-0.41, -0.39, -0.43)
         lb, V = tm_lblock(a=0.4, hz=0.9, t=o)
-        cache = update_cache!(allocate_cache(g, TCUT), lb, g)
+        cache = update_cache!(allocate_cache(g, TCUT), SDFMesh(lb), g)
         B1 = tm_box_planes(o, o + SVector(0.8, 0.4, 0.9))
         B2 = tm_box_planes(o + SVector(0.0, 0.4, 0.0), o + SVector(0.4, 0.8, 0.9))
         err = tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, B1) + tm_solid_fraction(scr, g, ci, B2))
@@ -100,7 +100,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         t, L, z1, depth = SVector(-0.7, 0.011, -0.31), 1.4, 0.13, 0.6
         for (b1, b2) in ((0.35, 0.42), (0.30, 0.41), (0.33, 0.36))
             hull, V, _ = tm_chine_prism(L=L, b1=b1, b2=b2, z1=z1, depth=depth, nx=5, t=t)
-            cache = update_cache!(allocate_cache(g, TCUT), hull, g)
+            cache = update_cache!(allocate_cache(g, TCUT), SDFMesh(hull), g)
             pieces = (tm_yz_prism((SVector(0.0, 0.0), SVector(b1, z1), SVector(b1, depth), SVector(-b1, depth), SVector(-b1, z1)), L, t),
                       tm_yz_prism((SVector(b1, z1), SVector(b2, z1), SVector(b2, depth), SVector(b1, depth)), L, t),
                       tm_yz_prism((SVector(-b2, z1), SVector(-b1, z1), SVector(-b1, depth), SVector(-b2, depth)), L, t))
@@ -116,7 +116,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         sph, _, _ = tm_icosphere(r=0.7, c=SVector(0.031, -0.017, 0.022), level=6)
         errs = map((16, 32)) do n
             gg = CartesianGrid(SVector(-1.0, -1.0, -1.0), (n, n, n), SVector(2 / n, 2 / n, 2 / n))
-            cache = update_cache!(allocate_cache(gg, TCUT), sph, gg)
+            cache = update_cache!(allocate_cache(gg, TCUT), SDFMesh(sph), gg)
             @test all(iszero, cache.info.flags)
             @test all(r -> r == RULE_SINGLE || r == 0x00, cache.info.rule)
             # Against the mesh's own volume, which is the faceted sphere's, not the true one's.
@@ -131,7 +131,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
     @testset "a plate thinner than a cell is flagged" begin
         lo, hi = SVector(-0.6, -0.55, 0.06), SVector(0.55, 0.6, 0.06 + 0.3 * 0.125)
         plate, _, _ = tm_box(lo, hi; n=2)
-        cache = update_cache!(allocate_cache(g, TCUT), plate, g)
+        cache = update_cache!(allocate_cache(g, TCUT), SDFMesh(plate), g)
         # Its top and bottom share no edge: no rule connects them, so the cell is flagged and cut
         # by one fallback plane (D3).
         @test tcut_count(cache, FLAG_UNSUPPORTED) > 0
@@ -142,7 +142,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
     @testset "fractions, and no NaN" begin
         sph, _, _ = tm_icosphere(r=0.6, level=3)
         for body in (sph, tm_lblock(a=0.4, hz=0.9, t=SVector(-0.41, -0.39, -0.43))[1])
-            cache = update_cache!(allocate_cache(g, TCUT), body, g)
+            cache = update_cache!(allocate_cache(g, TCUT), SDFMesh(body), g)
             vf = cache.cells.volume_fraction
             @test all(x -> 0 <= x <= 1, vf)
             @test !any(isnan, vf)
@@ -159,8 +159,8 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
             for hull in (tm_prism(L=1.4, beam=0.9, deadrise=20.0, depth=0.6, nx=5, t=SVector(-0.7, 0.013, -0.3))[1],
                          tm_chine_prism(b1=0.33, b2=0.36, nx=5, t=SVector(-0.7, 0.011, -0.31))[1])
                 g32 = CartesianMeshes.adapt_type(Float32, g)
-                host = update_cache!(allocate_cache(g32, TCUT), hull, g32)
-                dev = update_cache!(allocate_cache(g32, TCUT; backend=CUDABackend()), hull, g32)
+                host = update_cache!(allocate_cache(g32, TCUT), SDFMesh(hull), g32)
+                dev = update_cache!(allocate_cache(g32, TCUT; backend=CUDABackend()), SDFMesh(hull), g32)
                 @test Array(dev.cells.kind) == host.cells.kind
                 @test Array(dev.info.rule) == host.info.rule
                 @test Array(dev.info.flags) == host.info.flags
@@ -175,7 +175,7 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
             @info "gpph_clean.inp not generated (examples/geometry/run_generate_mesh.jl): skipped"
         else
             gh = CartesianGrid(SVector(-0.4, -1.5, -0.3), (172, 60, 40), SVector(0.05, 0.05, 0.05))
-            cache = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TCUT), hull, gh)
+            cache = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TCUT), SDFMesh(hull), gh)
             Vmesh = cache.work.topo.volume
             @test tcut_count(cache, FLAG_OVERFLOW) == 0
             @test tcut_count(cache, FLAG_CHAIN_FAIL) == 0

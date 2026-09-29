@@ -7,6 +7,7 @@
 # timed.
 
 using CutCellMethods, CartesianMeshes, MeshLibrary, StaticArrays, KernelAbstractions, Printf, Logging
+using SDFLibrary: SDFMesh
 const CC = CutCellMethods
 
 const HAS_CUDA = try
@@ -46,11 +47,12 @@ end
 
 function bench(label, grid, mesh; backend=KernelAbstractions.CPU())
     cache = allocate_cache(grid, TriClippingCutCell(); backend)
+    geo = SDFMesh(mesh; cache=Nothing) # the update takes an `SDFMesh`; built outside the timing
     with_logger(NullLogger()) do
-        update_cache!(cache, mesh, grid)
-        update_cache!(cache, mesh, grid)
+        update_cache!(cache, geo, grid)
+        update_cache!(cache, geo, grid)
     end
-    total = minimum(@elapsed(update_cache!(cache, mesh, grid)) for _ in 1:3)
+    total = minimum(@elapsed(update_cache!(cache, geo, grid)) for _ in 1:3)
     stages = staged_update!(cache, mesh, grid)
     r = CC.cut_report(cache)
     @printf("\n%s: %s cells (%.1f M), %d cut\n", label, Tuple(grid.n), prod(grid.n) / 1e6, r.cut)

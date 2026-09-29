@@ -129,7 +129,7 @@ end
                 SMatrix{3,3,Float64}(cos(1.0), sin(1.0), 0, -sin(1.0), cos(1.0), 0, 0, 0, 1)
             t = centre + 0.3 * (SVector(rand(rng), rand(rng), rand(rng)) .- 0.5) .* grid.d
             box, _, _ = tm_box(-half, half; n=2, R=R, t=t)
-            update_cache!(cache, box, grid)
+            tm_name_sets!(update_cache!(cache, SDFMesh(box), grid), box)
             fluid, w = tc_single_face(cache, grid, tm_box_planes(-half, half, R, t))
             ncells += length(fluid)
             worst = max(worst, w)
@@ -155,7 +155,7 @@ end
             R = tm_frame(nrm)
             lo, hi = SVector(s - 2half[1], -half[2], -half[3]), SVector(s, half[2], half[3])
             box, _, _ = tm_box(lo, hi; n=2, R=R)
-            cache = update_cache!(allocate_cache(g, TC), box, g)
+            cache = tm_name_sets!(update_cache!(allocate_cache(g, TC), SDFMesh(box), g), box)
             fluid, worst = tc_single_face(cache, g, tm_box_planes(lo, hi, R); faces=("+x",))
             @test length(fluid) >= 8
             @test worst < 1e-14
@@ -181,7 +181,7 @@ end
             axis = normalize(SVector(randn(rng), randn(rng), randn(rng)))
             mesh, planes, _ = tm_pyramid(; apex, axis, k, height=0.4 + 0.1rand(rng),
                                          radius=0.25 + 0.1rand(rng), θ0=2π * rand(rng))
-            update_cache!(cache, mesh, g)
+            update_cache!(cache, SDFMesh(mesh), g)
             hard += tc_count(cache, FLAG_OVERFLOW | FLAG_CHAIN_FAIL)
             # The apex cell: every side at once, by the convex rule.
             ca = CartesianIndex(Tuple(floor.(Int, (apex - g.x0) ./ g.d) .+ 1))
@@ -252,7 +252,7 @@ end
     @testset "the update is inferred" begin
         box, _, _ = tm_box(SVector(-0.4, -0.3, -0.35), SVector(0.35, 0.4, 0.3); n=2)
         cache = allocate_cache(g, TC)
-        @test (@inferred update_cache!(cache, box, g)) === cache
+        @test (@inferred update_cache!(cache, SDFMesh(box), g)) === cache
     end
 
     if HAS_GPU
@@ -260,8 +260,8 @@ end
             mesh, _, _ = tm_pyramid(; apex=SVector(0.013, -0.021, 0.037), axis=normalize(SVector(0.3, -0.5, 0.8)),
                                     k=8, height=0.45, radius=0.3, θ0=0.2)
             g32 = CartesianMeshes.adapt_type(Float32, g)
-            host = update_cache!(allocate_cache(g32, TC), mesh, g32)
-            dev = update_cache!(allocate_cache(g32, TC; backend=CUDABackend()), mesh, g32)
+            host = update_cache!(allocate_cache(g32, TC), SDFMesh(mesh), g32)
+            dev = update_cache!(allocate_cache(g32, TC; backend=CUDABackend()), SDFMesh(mesh), g32)
             @test maximum(host.info.npatch) == 8
             @test Array(dev.cells.kind) == host.cells.kind
             @test Array(dev.info.rule) == host.info.rule && Array(dev.info.npatch) == host.info.npatch

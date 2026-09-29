@@ -26,10 +26,14 @@ What [`allocate_cache`](@ref)`(grid, TriClippingCutCell(); backend)` builds and
 - `info` -- every cell's [`TriClipCellInfo`](@ref): how many patches cut it, the Boolean rule, the
   diagnostic flags, the closure correction.
 
-`mesh` is a watertight, outward-wound `Mesh{3}` of `Tri` elements in the grid's frame, with one
-`MeshElementSet` per smooth patch in `mesh.elemset`. A moving body is the same mesh with moved
-nodes, or the same body under a moved grid; either way the topology is not rebuilt as long as the
-connectivity and the sets do not change.
+`geo` is an `SDFMesh{3}` of a watertight, outward-wound surface of `Tri` elements in the grid's
+frame, built from a `Mesh` with one `MeshElementSet` per smooth patch. It is the **only** input the
+update takes, so the patches are always read one way, from `geo`'s per-element set labels, each set
+named by its index (`SDFMesh` keeps no names). The labels survive `geo` living on the GPU, and every
+update copies nodes, elements and labels to the host (`generate_mesh(geo)`), where the topology and
+binning run. A moving
+body is the same mesh with moved nodes, or the same body under a moved grid; either way the
+topology is not rebuilt as long as the connectivity and the sets do not change.
 """
 struct TriClippingCutCellCache{T,C<:AbstractArray{<:CutCellData},I,S,W} <: AbstractCutCellCache
     method::TriClippingCutCell
@@ -169,8 +173,9 @@ end
 allocate_cache(grid::CartesianGrid, ::TriClippingCutCell; kwargs...) =
     throw(ArgumentError("TriClippingCutCell cuts 3D grids only, got a $(length(grid.n))D grid"))
 
-function update_cache!(cache::TriClippingCutCellCache{T}, mesh::Mesh,
+function update_cache!(cache::TriClippingCutCellCache{T}, geo::SDFMesh{3},
                        grid::CartesianGrid{3}) where {T}
+    mesh = generate_mesh(geo) # host copy, `elemset` rebuilt from `geo.elem_set`
     _check_cache_size(cache.cells, grid)
     g = convert(CartesianGrid{3,T}, grid)
     g.d == cache.grid.d || throw(ArgumentError(

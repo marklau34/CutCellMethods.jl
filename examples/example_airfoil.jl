@@ -35,7 +35,8 @@ ms_cache = update_cache!(allocate_cache(grid, ms), geo, grid)
 write_vtk(MeshLibrary.generate_mesh(ms_cache, grid), joinpath(outdir, "airfoil_contour"))
 
 # ==================================================================================
-# Polyline clipping: exact cut cells straight from the line mesh, no SDF
+# Polyline clipping: exact cut cells from the line mesh itself. The cache takes it as the `SDFMesh`
+# built above (it reads the elements and their sets, never the distance).
 
 # A uniform grid of square cells around the airfoil, padded so the body stays clear of the grid's
 # edge -- the cut needs at least one clear cell between the body and every side.
@@ -49,7 +50,7 @@ pgrid = CartesianGrid(lo, Tuple(ceil.(Int, (hi - lo) ./ h)), SVector(h, h))
 # so the solid is on the left of every element. A moving airfoil is the same call with moved nodes.
 pc = PolylineClippingCutCell()
 cache = allocate_cache(pgrid, pc)
-update_cache!(cache, mesh, pgrid)
+update_cache!(cache, geo, pgrid)
 println(CutCellMethods.cut_cell_report(cache.cells))
 
 # The walls the cut used, read off the cache as a line mesh wound like the airfoil, so its normals

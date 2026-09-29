@@ -23,8 +23,13 @@
                          aperture_snap=0.0)
 
 Cut cells from a watertight triangle mesh whose triangles the caller has grouped into smooth
-patches, one `MeshElementSet` per patch in `mesh.elemset`. Planar corners between patches -- a
-transom meeting the bottom, a chine -- are reproduced exactly; curved patches to second order.
+patches, one `MeshElementSet` per patch in `mesh.elemset`, handed to the cache as `SDFMesh(mesh)`:
+the cache takes the `SDFMesh` and nothing else, and reads the patches from its per-element set
+labels. Planar corners between patches -- a transom meeting the bottom, a chine -- are reproduced
+exactly; curved patches to second order.
+
+An `SDFMesh` keeps set membership but not the set names, so the cut sees each set named by its index
+in the original `mesh.elemset`, `"1"`, `"2"`, ...: `planar_patches` names them that way.
 
 Every tolerance is relative to the grid's smallest cell size `h = minimum(grid.d)`:
 

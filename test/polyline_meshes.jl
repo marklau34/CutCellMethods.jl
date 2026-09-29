@@ -137,3 +137,15 @@ function invalid_poly_meshes()
         ("nested loops", poly_mesh([rect_pts((0, 0), (3, 3)), rect_pts((1, 1), (2, 2))]), "inside"),
     ]
 end
+
+# An `SDFMesh` keeps set membership but not names, so the cut names each loop by its set's index in
+# `mesh.elemset`, "1", "2", .... The tests read loops by the names their meshes were built with, so
+# this names the cut's loops back from the source mesh by parsing that index (idempotent).
+function poly_name_sets!(cache, mesh)
+    names = cache.work.topo.loop_name
+    for (l, n) in enumerate(names)
+        k = tryparse(Int, n)
+        k === nothing || (names[l] = mesh.elemset[k].name)
+    end
+    return cache
+end

@@ -21,18 +21,19 @@ isdefined(@__MODULE__, :PV) || include("polyline_meshes.jl")
 
 const PO_G = CartesianGrid(SVector(-1.0, -1.0), (64, 64), SVector(1 / 32, 1 / 32))
 const PO_M = PolylineClippingCutCell()
-po_cut(loops; g=PO_G) = update_cache!(allocate_cache(g, PO_M), poly_mesh(loops), g)
+po_cut(loops; g=PO_G) = update_cache!(allocate_cache(g, PO_M), SDFMesh(poly_mesh(loops)), g)
 
 function po_second_update_bytes(n)
     g = CartesianGrid(SVector(-1.0, -1.0), (n, n), SVector(2 / n, 2 / n))
-    mesh = poly_mesh([naca4_pts(; m=0.02, p=0.4, t=0.12, n=n, chord=1.2, le=(-0.6, 0.0))])
+    # Built once, outside the measurement: the update's own allocations are what is measured.
+    mesh = SDFMesh(poly_mesh([naca4_pts(; m=0.02, p=0.4, t=0.12, n=n, chord=1.2, le=(-0.6, 0.0))]))
     c = allocate_cache(g, PO_M)
     g2 = CartesianGrid(g.x0 .+ 0.37 .* g.d, Tuple(g.n), g.d)
     for _ in 1:3
         update_cache!(c, mesh, g)
         update_cache!(c, mesh, g2)
     end
-    return @allocated update_cache!(c, mesh, g)
+    return (bytes=(@allocated update_cache!(c, mesh, g)), elements=length(mesh.elements))
 end
 
 # A consumer's kernel reading the cache through the uniform readers, as HYBIS's geometry pass does:
@@ -56,18 +57,20 @@ po_shoelace(p) =sum(i -> (p[i][1] * p[mod1(i + 1, length(p))][2] - p[i][2] * p[m
 
 @testset verbose = true "polyline clipping: determinism and output" begin
 
-    @testset "a second update allocates only launch overhead" begin
+    @testset "a second update allocates launch overhead and a copy of the mesh" begin
         # The launch overhead grows a little on small grids and then levels off (it is the same at
-        # 1024^2 and 2048^2); past that, 16x the cells and 4x the elements change nothing.
+        # 1024^2 and 2048^2); past that, 16x the cells change nothing. The elements do: every update
+        # copies the `SDFMesh` to a host `Mesh` and rebuilds its element sets from the labels
+        # (`generate_mesh(geo)`), measured at ~20 B an element, so each is allowed 32 B on top.
         small, large = po_second_update_bytes(256), po_second_update_bytes(1024)
-        @test large < 256 * 1024
-        @test large < 1.15 * small
+        @test large.bytes < 256 * 1024
+        @test large.bytes < 1.15 * small.bytes + 32 * (large.elements - small.elements)
     end
 
     @testset "the update is inferred" begin
         mesh = poly_mesh([naca4_pts(; m=0.02, p=0.4, t=0.12, n=100, chord=1.4, le=(-0.7, 0.01), α=0.1)])
         c = allocate_cache(PO_G, PO_M)
-        @test (@inferred update_cache!(c, mesh, PO_G)) === c
+        @test (@inferred update_cache!(c, SDFMesh(mesh), PO_G)) === c
     end
 
     @testset "adapting gives the results alone, which read the same way" begin
@@ -110,8 +113,8 @@ po_shoelace(p) =sum(i -> (p[i][1] * p[mod1(i + 1, length(p))][2] - p[i][2] * p[m
                           [plate_pts((0.0, 0.1), 1.3, 1e-3; θ=0.21), square_pts((0.3, -0.5), 0.004)],
                           [rect_pts((-0.5, -0.25), (0.25, 0.5))])
                 mesh = poly_mesh(loops)
-                host = update_cache!(allocate_cache(g, PO_M), mesh, g)
-                dev = update_cache!(allocate_cache(g, PO_M; backend=Main.CUDABackend()), mesh, g)
+                host = update_cache!(allocate_cache(g, PO_M), SDFMesh(mesh), g)
+                dev = update_cache!(allocate_cache(g, PO_M; backend=Main.CUDABackend()), SDFMesh(mesh), g)
                 dc = Adapt.adapt(Array, dev.cells)
                 di = Adapt.adapt(Array, dev.info)
                 @test di.status == host.info.status
@@ -145,7 +148,7 @@ po_shoelace(p) =sum(i -> (p[i][1] * p[mod1(i + 1, length(p))][2] - p[i][2] * p[m
                       [[p + PV(-0.55, 0.0) for p in pts] for pts in three_element_pts()],
                       [plate_pts((0.0, 0.1), 1.3, 1e-3; θ=0.21)])
             mesh = poly_mesh(loops)
-            c = update_cache!(allocate_cache(PO_G, PO_M), mesh, PO_G)
+            c = update_cache!(allocate_cache(PO_G, PO_M), SDFMesh(mesh), PO_G)
             walls, cells, regs = interface_mesh(c, PO_G)
             perim = sum(pts -> sum(i -> sqrt(sum(abs2, pts[mod1(i + 1, length(pts))] - pts[i])), eachindex(pts)), loops)
             @test sum(get_length(walls, e) for e in walls.elements) ≈ perim rtol = 1e-13

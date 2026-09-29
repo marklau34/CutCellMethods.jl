@@ -23,7 +23,7 @@ end
 
 """A cache over `grid`, updated from `mesh`: the update that validates it."""
 pt_cache(mesh; grid=pt_grid(mesh), method=PolylineClippingCutCell()) =
-    update_cache!(allocate_cache(grid, method), mesh, grid)
+    poly_name_sets!(update_cache!(allocate_cache(grid, method), SDFMesh(mesh), grid), mesh)
 
 """The loops an update finds in `mesh`, and their areas."""
 poly_check(mesh) = (c = pt_cache(mesh); (c.work.topo, c.work.loop_area))
@@ -103,14 +103,8 @@ poly_check(mesh) = (c = pt_cache(mesh); (c.work.topo, c.work.loop_area))
         end
     end
 
-    @testset "rejects non-line meshes" begin
-        g = CartesianGrid(SVector(-1.0, -1.0), (16, 16), SVector(0.25, 0.25))
-        tri3 = Mesh([Point(SVector(0.0, 0.0, 0.0)), Point(SVector(1.0, 0.0, 0.0)), Point(SVector(0.0, 1.0, 0.0))],
-                    [Tri(Int32(1), Int32(2), Int32(3))])
-        @test_throws ArgumentError pt_cache(tri3; grid=g)
-        tri2 = Mesh([Point(PV(0, 0)), Point(PV(0.5, 0)), Point(PV(0, 0.5))], [Tri(Int32(1), Int32(2), Int32(3))])
-        @test_throws ArgumentError pt_cache(tri2; grid=g)
-    end
+    # (A mesh that is not 2D lines no longer reaches the cut: the cache takes an `SDFMesh{2}`, so
+    # dispatch refuses it.)
 
     @testset "fingerprint" begin
         # What decides whether an update rebuilds the loops: the connectivity and the element
@@ -124,8 +118,9 @@ poly_check(mesh) = (c = pt_cache(mesh); (c.work.topo, c.work.loop_area))
         @test fingerprint(moved) == fp
         topo, area = poly_check(moved)
         @test area ≈ pts_area.(loops) rtol = 1e-13
-        # A change of connectivity or of the sets changes it.
-        @test fingerprint(poly_mesh(loops; names=["slat", "main", "flap2"])) != fp
+        # A change of connectivity or of set membership changes it. A renamed set does not: an
+        # `SDFMesh` keeps no names, so the cut never sees one.
+        @test fingerprint(poly_mesh(loops; names=["slat", "main", "flap2"])) == fp
         @test fingerprint(poly_mesh(loops[1:2]; names=["slat", "main"])) != fp
         perm = randperm(rng, sum(length, loops))
         @test fingerprint(poly_mesh(loops; names=["slat", "main", "flap"], perm=perm)) != fp

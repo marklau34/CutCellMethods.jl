@@ -123,7 +123,7 @@ end
         for (lo, hi) in ((SVector(-0.3125, -0.4375, -0.1875), SVector(0.4375, 0.3125, 0.5625)),
                          (SVector(-0.375, -0.5, -0.25), SVector(0.5, 0.25, 0.625)))
             box, _, _ = tm_box(lo, hi; n=4)
-            cache = update_cache!(allocate_cache(g, TCC), box, g)
+            cache = update_cache!(allocate_cache(g, TCC), SDFMesh(box), g)
             # The ray is along +x and the line is perturbed to (y + ε, z + ε²), so a centre on a
             # face is inside for x ∈ (lo, hi] and y, z ∈ [lo, hi).
             inside(x) = lo[1] < x[1] <= hi[1] && lo[2] <= x[2] < hi[2] && lo[3] <= x[3] < hi[3]
@@ -140,7 +140,7 @@ end
         R = SMatrix{3,3,Float64}(cosd(45), sind(45), 0, -sind(45), cosd(45), 0, 0, 0, 1)
         # Rotated 45° about z with its corners on the lattice: rows run along its edges.
         box, _, _ = tm_box(SVector(-0.5, -0.25, -0.375), SVector(0.25, 0.5, 0.375); n=2, R=R)
-        cache = update_cache!(allocate_cache(g, TCC), box, g)
+        cache = update_cache!(allocate_cache(g, TCC), SDFMesh(box), g)
         inside, near = tcc_convex(box)
         @test isempty(tcc_misclassified(cache, g, inside; skip=near))
         # And tilted about two axes, off the lattice.
@@ -148,7 +148,7 @@ end
              SMatrix{3,3,Float64}(1, 0, 0, 0, cosd(17), sind(17), 0, -sind(17), cosd(17))
         box2, _, _ = tm_box(SVector(-0.45, -0.3, -0.25), SVector(0.4, 0.35, 0.3); n=3, R=R2,
                             t=SVector(0.013, -0.021, 0.007))
-        cache2 = update_cache!(allocate_cache(g, TCC), box2, g)
+        cache2 = update_cache!(allocate_cache(g, TCC), SDFMesh(box2), g)
         inside2, near2 = tcc_convex(box2)
         @test isempty(tcc_misclassified(cache2, g, inside2; skip=near2))
     end
@@ -156,12 +156,12 @@ end
     @testset "the prism hull, the L-block and a sphere" begin
         hull, _, _ = tm_prism(L=1.4, beam=0.9, deadrise=20.0, depth=0.6, nx=5,
                               t=SVector(-0.7, 0.0, -0.3))
-        cache = update_cache!(allocate_cache(g, TCC), hull, g)
+        cache = update_cache!(allocate_cache(g, TCC), SDFMesh(hull), g)
         inside, near = tcc_convex(hull)
         @test isempty(tcc_misclassified(cache, g, inside; skip=near))
 
         lb, _ = tm_lblock(a=0.4, hz=0.9, t=SVector(-0.41, -0.39, -0.43))
-        cache = update_cache!(allocate_cache(g, TCC), lb, g)
+        cache = update_cache!(allocate_cache(g, TCC), SDFMesh(lb), g)
         o = SVector(-0.41, -0.39, -0.43)
         inl(x) = (y = x - o; (0 < y[3] < 0.9) && ((0 < y[1] < 0.8 && 0 < y[2] < 0.4) || (0 < y[1] < 0.4 && 0 < y[2] < 0.8)))
         nearl(x) = (y = x - o; any(abs.(y) .< 1e-9) || any(abs.(y .- 0.4) .< 1e-9) ||
@@ -169,7 +169,7 @@ end
         @test isempty(tcc_misclassified(cache, g, inl; skip=nearl))
 
         sph, _, _ = tm_icosphere(r=0.77, c=SVector(0.031, -0.017, 0.022), level=3)
-        cache = update_cache!(allocate_cache(g, TCC), sph, g)
+        cache = update_cache!(allocate_cache(g, TCC), SDFMesh(sph), g)
         inside, near = tcc_convex(sph)
         @test isempty(tcc_misclassified(cache, g, inside; skip=near))
         # The solid, (4/3)π 0.77^3, to within the faceting of a level-3 sphere.
@@ -180,13 +180,13 @@ end
         sph, _, _ = tm_icosphere(r=0.6, c=SVector(0.05, -0.03, 0.02), level=2)
         X = tm_coords(sph)
         tris = tm_tris(sph)
-        cache = update_cache!(allocate_cache(g, TCC), sph, g)
+        cache = update_cache!(allocate_cache(g, TCC), SDFMesh(sph), g)
         w = cache.work
         block = w.block
         s1, l1 = copy(w.bin_start), copy(w.bin_tri)
         r1, rl1 = copy(w.row_start), copy(w.row_tri)
         # Deterministic: the same body binned again, into the same grow-only buffers, bins the same.
-        update_cache!(cache, sph, g)
+        update_cache!(cache, SDFMesh(sph), g)
         @test w.bin_start == s1 && w.bin_tri == l1
         @test w.row_start == r1 && w.row_tri == rl1
         dims = block.hi - block.lo .+ 1
@@ -221,14 +221,14 @@ end
         @test length(r1) == dims[2] * dims[3] + 1
     end
 
-    @testset "a moving body: grid shifts, moved nodes, the empty mesh" begin
+    @testset "a moving body: grid shifts, moved nodes" begin
         sph, _, _ = tm_icosphere(r=0.55, c=SVector(0.0123, -0.0217, 0.0311), level=3)
-        cache = update_cache!(allocate_cache(g, TCC), sph, g)
+        cache = update_cache!(allocate_cache(g, TCC), SDFMesh(sph), g)
         kind0 = copy(cache.cells.kind)
         # The grid shifted by whole cells: cell i of the new grid is cell i + s of the old.
         s = (1, 2, -1)
         gs = CartesianGrid(g.x0 .+ g.d .* SVector(s), Tuple(g.n), g.d)
-        update_cache!(cache, sph, gs)
+        update_cache!(cache, SDFMesh(sph), gs)
         shifted = [cache.cells.kind[ci] == kind0[ci + CartesianIndex(s)]
                    for ci in CartesianIndices(ntuple(a -> max(1, 1 - s[a]):min(g.n[a], g.n[a] - s[a]), 3))]
         @test all(shifted)
@@ -238,32 +238,28 @@ end
         # A moved body leaves nothing behind: bitwise a fresh cache that only saw the new position.
         moved = tm_retri(sph, tm_tris(sph))
         moved.nodes.coord .+= Ref(SVector(0.21, -0.13, 0.08))
-        update_cache!(cache, moved, g)
-        fresh = update_cache!(allocate_cache(g, TCC), moved, g)
+        update_cache!(cache, SDFMesh(moved), g)
+        fresh = update_cache!(allocate_cache(g, TCC), SDFMesh(moved), g)
         @test cache.cells == fresh.cells && cache.info == fresh.info
-        # The empty mesh returns the cache to no body.
-        empty_mesh = Mesh(Point{3,Float64}, Tri{Int32})
-        update_cache!(cache, empty_mesh, g)
-        @test all(==(CELL_OUTSIDE), cache.cells.kind) && all(isone, cache.cells.volume_fraction)
-        @test cache.cells == allocate_cache(g, TCC).cells
+        # (No empty-mesh case: an `SDFMesh` cannot be built from an empty mesh.)
         # The topology is kept across moves and rebuilt when forgotten.
-        update_cache!(cache, moved, g)
+        update_cache!(cache, SDFMesh(moved), g)
         topo = cache.work.topo
-        update_cache!(cache, sph, g)
+        update_cache!(cache, SDFMesh(sph), g)
         @test cache.work.topo === topo
         reset_topology!(cache)
-        update_cache!(cache, sph, g)
+        update_cache!(cache, SDFMesh(sph), g)
         @test cache.work.topo !== topo
     end
 
     @testset "fixed n, fixed cell size, a body inside the grid" begin
         sph, _, _ = tm_icosphere(r=0.5, level=2)
         cache = allocate_cache(g, TCC)
-        @test_throws DimensionMismatch update_cache!(cache, sph, CartesianGrid(g.x0, (8, 8, 8), g.d))
-        @test_throws ArgumentError update_cache!(cache, sph, CartesianGrid(g.x0, Tuple(g.n), 2 * g.d))
+        @test_throws DimensionMismatch update_cache!(cache, SDFMesh(sph), CartesianGrid(g.x0, (8, 8, 8), g.d))
+        @test_throws ArgumentError update_cache!(cache, SDFMesh(sph), CartesianGrid(g.x0, Tuple(g.n), 2 * g.d))
         big, _, _ = tm_icosphere(r=0.99, level=2)
         err = try
-            update_cache!(cache, big, g)
+            update_cache!(cache, SDFMesh(big), g)
             nothing
         catch e
             e
@@ -278,7 +274,7 @@ end
         else
             # A coarse grid: the reference sums a solid angle over every triangle for every cell.
             gh = CartesianGrid(SVector(-0.4, -1.5, -0.3), (44, 15, 10), SVector(0.2, 0.2, 0.2))
-            c = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TCC), h, gh)
+            c = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TCC), SDFMesh(h), gh)
             X = tm_coords(h)
             tris = tm_tris(h)
             bad = 0
@@ -301,9 +297,9 @@ end
     @testset "Float32, and the GPU agrees with the host" begin
         sph, _, _ = tm_icosphere(r=0.6, c=SVector(0.0123, -0.0217, 0.0311), level=3)
         g32 = CartesianMeshes.adapt_type(Float32, g)
-        c32 = update_cache!(allocate_cache(g32, TCC), sph, g32)
+        c32 = update_cache!(allocate_cache(g32, TCC), SDFMesh(sph), g32)
         @test eltype(c32.cells) === CutCellData{3,Float32,6,2}
-        c64 = update_cache!(allocate_cache(g, TCC), sph, g)
+        c64 = update_cache!(allocate_cache(g, TCC), SDFMesh(sph), g)
         # Away from the surface, where single precision cannot move a centre across it.
         X = tm_coords(sph)
         planes = map(c -> (n = normalize(cross(X[c[2]] - X[c[1]], X[c[3]] - X[c[1]])); (n, dot(n, X[c[1]]))),
@@ -311,7 +307,7 @@ end
         clear(ci) = abs(maximum(p -> dot(p[1], tcc_centre(g, ci)) - p[2], planes)) > 1e-5
         @test count(ci -> clear(ci) && c32.cells.kind[ci] != c64.cells.kind[ci], idx) == 0
         if HAS_GPU
-            dev = update_cache!(allocate_cache(g32, TCC; backend=CUDABackend()), sph, g32)
+            dev = update_cache!(allocate_cache(g32, TCC; backend=CUDABackend()), SDFMesh(sph), g32)
             dk = Array(dev.cells.kind)
             @test count(ci -> clear(ci) && dk[ci] != c32.cells.kind[ci], idx) == 0
             @test maximum(abs, Array(dev.cells.volume_fraction) .- c32.cells.volume_fraction) <= 1

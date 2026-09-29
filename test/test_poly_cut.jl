@@ -34,7 +34,7 @@ const PX_G = CartesianGrid(SVector(-1.0, -1.0), (64, 64), SVector(1 / 32, 1 / 32
 const PX_M = PolylineClippingCutCell()
 const PX_ALLOWED = PL_FLAG_SNAPPED | PL_FLAG_ISLAND     # the flags that are information, not trouble
 
-cut(loops; g=PX_G, method=PX_M) = update_cache!(allocate_cache(g, method), poly_mesh(loops), g)
+cut(loops; g=PX_G, method=PX_M) = update_cache!(allocate_cache(g, method), SDFMesh(poly_mesh(loops)), g)
 
 # ---- references ----------------------------------------------------------------------------------
 
@@ -325,7 +325,7 @@ domain_area(g) = prod(g.n .* g.d)
             R = _rot(2π * rand(rng))
             mesh = poly_mesh([R * p for p in pts])
             g = CartesianGrid(g0.x0 + g0.d .* SVector(rand(rng), rand(rng)), Tuple(g0.n), g0.d)
-            c = update_cache!(caches[k], mesh, g)
+            c = update_cache!(caches[k], SDFMesh(mesh), g)
             n += 1
             ninvalid += count(==(PL_INVALID), c.info.status)
             worst = max(worst, abs(total_fluid(c, g) - (domain_area(g) - areas[k])) / domain_area(g))
@@ -362,7 +362,7 @@ domain_area(g) = prod(g.n .* g.d)
             R = _rot(2π * rand(rng))                 # one rotation per trial, not per point
             mesh = poly_mesh([R * q for q in pts])
             g = CartesianGrid(g0.x0 + g0.d .* SVector(rand(rng), rand(rng)), Tuple(g0.n), g0.d)
-            update_cache!(c, mesh, g)
+            update_cache!(c, SDFMesh(mesh), g)
             ninvalid += count(==(PL_INVALID), c.info.status)
             worst = max(worst, abs(total_fluid(c, g) - (domain_area(g) - pts_area(pts))) / domain_area(g))
             trial % 10 == 0 && (nbad += !isempty(cut_invariants(c, g)))

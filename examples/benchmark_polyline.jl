@@ -12,6 +12,7 @@
 # The N = 256 cut is also written to `examples/outputs/` for ParaView.
 
 using CutCellMethods, CartesianMeshes, MeshLibrary, StaticArrays, KernelAbstractions
+using SDFLibrary: SDFMesh
 using CutCellMethods: PL_INVALID, PL_SPLIT, write_cache_vtk
 const CM = CutCellMethods
 median(v) = (s = sort(v); n = length(s); isodd(n) ? s[(n + 1) ÷ 2] : (s[n ÷ 2] + s[n ÷ 2 + 1]) / 2)
@@ -72,10 +73,11 @@ function run_case(name, loops, N; backend=CPU(), T=Float64, steps=20, moves=:bod
         grids = [CartesianGrid(g0.x0 + g0.d .* SVector{2,T}(rand(), rand()), Tuple(g0.n), g0.d)
                  for _ in 1:steps]
     end
-    update_cache!(cache, meshes[1], grids[1]); update_cache!(cache, meshes[2], grids[2])  # warm up
-    t_total = [(@elapsed update_cache!(cache, meshes[k], grids[k])) for k in 1:steps]
+    geos = SDFMesh.(meshes; cache=Nothing) # the update takes an `SDFMesh`; built outside the timing
+    update_cache!(cache, geos[1], grids[1]); update_cache!(cache, geos[2], grids[2])  # warm up
+    t_total = [(@elapsed update_cache!(cache, geos[k], grids[k])) for k in 1:steps]
     t_host = [(@elapsed host_part!(cache, meshes[k], grids[k])) for k in 1:steps]
-    update_cache!(cache, meshes[end], grids[end])
+    update_cache!(cache, geos[end], grids[end])
     mesh = meshes[end]
     st = Array(cache.info.status)
     vf = Array(cache.cells.volume_fraction)

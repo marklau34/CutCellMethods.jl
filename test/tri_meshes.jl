@@ -432,4 +432,18 @@ function tm_retri(mesh, tris::Vector{SVector{3,Int32}}; sets=mesh.elemset)
     return Mesh(collect(mesh.nodes), [Tri(c) for c in tris]; element_sets=sets)
 end
 tm_tris(mesh) = SVector{3,Int32}[SVector{3,Int32}(e.con) for e in mesh.elements]
+
+# An `SDFMesh` keeps set membership but not names, so the cut names each patch by its set's index in
+# `mesh.elemset`, "1", "2", .... The tests read patches by the names their meshes were built with, so
+# these name the cut's patches back from the source mesh by parsing that index (idempotent), and give
+# the index name a name maps to, for what is matched while the topology is built (`planar_patches`).
+function tm_name_sets!(cache, mesh)
+    names = cache.work.topo.patch_name
+    for (p, n) in enumerate(names)
+        k = tryparse(Int, n)
+        k === nothing || (names[p] = mesh.elemset[k].name)
+    end
+    return cache
+end
+tm_set_index(mesh, name) = string(findfirst(s -> s.name == name, mesh.elemset))
 tm_coords(mesh) = SVector{3,Float64}[SVector{3,Float64}(c) for c in mesh.nodes.coord]

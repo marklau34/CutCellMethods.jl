@@ -24,7 +24,7 @@
     PolylineClippingCutCellCache
 
 What [`allocate_cache`](@ref)`(grid, PolylineClippingCutCell(); backend)` builds and
-[`update_cache!`](@ref)`(cache, mesh, grid)` refreshes:
+[`update_cache!`](@ref)`(cache, geo::SDFMesh{2}, grid)` refreshes:
 
 - `cells` -- every cell's [`CutCellData`](@ref)`{2,T,4,1}`, a `StructArray` sized `grid.n`, as in
   every other cache. In a cut cell these are the cell's totals over all its fluid regions.
@@ -42,9 +42,12 @@ What [`allocate_cache`](@ref)`(grid, PolylineClippingCutCell(); backend)` builds
 Read one cell's through [`region`](@ref), [`regions`](@ref), [`arcs`](@ref) and
 [`boundary_segments`](@ref).
 
-`mesh` is a `Mesh{2}` of `Line` elements in the grid's frame, each loop counter-clockwise. A moving
-body is the same mesh with moved nodes, or the same body under a moved grid; either way the
-topology is not rebuilt while the connectivity does not change.
+`geo` is an `SDFMesh{2}` of `Line` elements in the grid's frame, each loop counter-clockwise: the
+**only** input the update takes, so the element sets are always read one way, from `geo`'s
+per-element labels. Those survive `geo` living on the GPU, and every update copies nodes, elements
+and labels to the host (`generate_mesh(geo)`), where the combinatorics run. A moving body is the
+same mesh with moved nodes, or the same body under a moved grid; either way the topology is not
+rebuilt while the connectivity does not change.
 """
 struct PolylineClippingCutCellCache{T,C<:AbstractArray{<:CutCellData},I,E,R,Q,A,B,W} <: AbstractCutCellCache
     method::PolylineClippingCutCell
@@ -150,8 +153,9 @@ allocate_cache(grid::CartesianGrid, ::PolylineClippingCutCell; kwargs...) = thro
 
 _pl_full_block(g::CartesianGrid{2}) = PolylineBlock(SVector(1, 1), SVector{2,Int}(g.n), false)
 
-function update_cache!(cache::PolylineClippingCutCellCache{T}, mesh::Mesh,
+function update_cache!(cache::PolylineClippingCutCellCache{T}, geo::SDFMesh{2},
                        grid::CartesianGrid{2}) where {T}
+    mesh = generate_mesh(geo) # host copy, `elemset` rebuilt from `geo.elem_set`
     _check_cache_size(cache.cells, grid)
     g = convert(CartesianGrid{2,T}, grid)
     g.d == cache.grid.d || throw(ArgumentError(

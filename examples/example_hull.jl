@@ -25,10 +25,10 @@ lo = reduce((a, b) -> min.(a, b), mesh.nodes.coord) .- pad
 hi = reduce((a, b) -> max.(a, b), mesh.nodes.coord) .+ pad
 grid = CartesianGrid(lo, Tuple(ceil.(Int, (hi - lo) ./ h)), SVector(h, h, h))
 
-# One cache for the grid, updated from the hull. Each element set is a patch the cut fits one
-# plane to per cell.
+# One cache for the grid, updated from the hull as an `SDFMesh`, which carries the element sets as
+# per-element labels. Each element set is a patch the cut fits one plane to per cell.
 cache = allocate_cache(grid, TriClippingCutCell())
-@time update_cache!(cache, mesh, grid)
+@time update_cache!(cache, SDFMesh(mesh), grid)
 display(CutCellMethods.cut_report(cache))
 
 # VTK: the cells (volume fraction, kind, rule, flags, face fractions, ...) and the reconstructed

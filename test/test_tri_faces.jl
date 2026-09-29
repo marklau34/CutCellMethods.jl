@@ -66,7 +66,7 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
                          (SVector(-0.3125, -0.4375, -0.1875), SVector(0.4375, 0.3125, 0.5625)),
                          (SVector(-0.375, -0.5, -0.25), SVector(0.5, 0.25, 0.625)))
             box, _, areas = tm_box(lo, hi; n=3)
-            cache = update_cache!(allocate_cache(g, TF), box, g)
+            cache = tm_name_sets!(update_cache!(allocate_cache(g, TF), SDFMesh(box), g), box)
             @test tf_clean(tf_audit(cache, g); correction=1e-13)
             @test count(f -> f & (FLAG_CLOSURE_FALLBACK | FLAG_CORR_LARGE) != 0, cache.info.flags) == 0
             # The interface split by patch is each face's exact area.
@@ -81,21 +81,21 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
             SMatrix{3,3,Float64}(1, 0, 0, 0, cosd(17), sind(17), 0, -sind(17), cosd(17))
         rbox, _, _ = tm_box(SVector(-0.45, -0.3, -0.25), SVector(0.4, 0.35, 0.3); n=3, R=R,
                             t=SVector(0.013, -0.021, 0.007))
-        @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), rbox, g), g); correction=1e-13)
+        @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), SDFMesh(rbox), g), g); correction=1e-13)
         hull, _, _ = tm_prism(L=1.4, beam=0.9, deadrise=20.0, depth=0.6, nx=5, t=SVector(-0.7, 0.013, -0.3))
-        @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), hull, g), g); correction=1e-13)
+        @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), SDFMesh(hull), g), g); correction=1e-13)
         # Concave and mixed creases too: the L-block, and chine flats narrower than a cell -- the
         # mixed rule's faces are cut by the same labelled arrangement, over the two cells' union.
         lb, _ = tm_lblock(a=0.4, hz=0.9, t=SVector(-0.41, -0.39, -0.43))
-        @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), lb, g), g); correction=1e-13)
+        @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), SDFMesh(lb), g), g); correction=1e-13)
         for (b1, b2) in ((0.35, 0.42), (0.33, 0.36))
             ch, _, _ = tm_chine_prism(b1=b1, b2=b2, nx=5, t=SVector(-0.7, 0.011, -0.31))
-            @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), ch, g), g); correction=1e-13)
+            @test tf_clean(tf_audit(update_cache!(allocate_cache(g, TF), SDFMesh(ch), g), g); correction=1e-13)
         end
         # A fallback cell's face neighbours absorb its error through the shared face, and nothing
         # further: the thin plate, whose top and bottom share no edge.
         plate, _, _ = tm_box(SVector(-0.6, -0.55, 0.06), SVector(0.55, 0.6, 0.06 + 0.3 * 0.125); n=2)
-        cache = update_cache!(allocate_cache(g, TF), plate, g)
+        cache = update_cache!(allocate_cache(g, TF), SDFMesh(plate), g)
         @test tf_clean(tf_audit(cache, g))
         uns = findall(f -> f & FLAG_UNSUPPORTED != 0, cache.info.flags)
         near(ci) = any(u -> sum(abs, Tuple(ci - u)) <= 1, uns)
@@ -106,7 +106,7 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
         sph, _, _ = tm_icosphere(r=0.7, c=SVector(0.031, -0.017, 0.022), level=6)
         p99 = map((16, 32)) do n
             gg = CartesianGrid(SVector(-1.0, -1.0, -1.0), (n, n, n), SVector(2 / n, 2 / n, 2 / n))
-            cache = update_cache!(allocate_cache(gg, TF), sph, gg)
+            cache = update_cache!(allocate_cache(gg, TF), SDFMesh(sph), gg)
             @test tf_clean(tf_audit(cache, gg))
             corr = sort([cache.info.correction[ci] for ci in CartesianIndices(Tuple(gg.n)) if cache.cells.kind[ci] == CELL_CUT])
             corr[ceil(Int, 0.99 * length(corr))]
@@ -133,7 +133,7 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
                 SMatrix{3,3,Float64}(cos(θ[3]), sin(θ[3]), 0, -sin(θ[3]), cos(θ[3]), 0, 0, 0, 1)
             s = (SVector(rand(rng), rand(rng), rand(rng)) .- 0.5) .* g.d
             hull.nodes.coord .= Ref(R) .* (X0 .- Ref(centre)) .+ Ref(centre + s)
-            update_cache!(cache, hull, g)
+            update_cache!(cache, SDFMesh(hull), g)
             planes = [(R * n, d - dot(n, centre) + dot(R * n, centre + s)) for (n, d) in planes0]
             for ci in idx
                 cache.cells.kind[ci] == CELL_CUT || continue
@@ -147,7 +147,8 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
     end
 
     @testset "a second update allocates a bounded amount" begin
-        sph, _, _ = tm_icosphere(r=0.6, level=4)
+        # Built once, outside the measurement: the update's own allocations are what is measured.
+        sph = SDFMesh(first(tm_icosphere(r=0.6, level=4)))
         cache = allocate_cache(g, TF)
         g2 = CartesianGrid(g.x0 .+ 0.37 .* g.d, Tuple(g.n), g.d)
         update_cache!(cache, sph, g)
@@ -180,8 +181,8 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
         if HAS_GPU
             hull, _, _ = tm_prism(L=1.4, beam=0.9, deadrise=20.0, depth=0.6, nx=5, t=SVector(-0.7, 0.013, -0.3))
             g32 = CartesianMeshes.adapt_type(Float32, g)
-            host = update_cache!(allocate_cache(g32, TF), hull, g32)
-            dev = update_cache!(allocate_cache(g32, TF; backend=CUDABackend()), hull, g32)
+            host = update_cache!(allocate_cache(g32, TF), SDFMesh(hull), g32)
+            dev = update_cache!(allocate_cache(g32, TF; backend=CUDABackend()), SDFMesh(hull), g32)
             dcells = Adapt.adapt(Array, dev.cells)
             @test dcells.kind == host.cells.kind
             @test Array(dev.info.rule) == host.info.rule && Array(dev.info.flags) == host.info.flags
@@ -198,7 +199,7 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
             @info "gpph_clean.inp not generated (examples/geometry/run_generate_mesh.jl): skipped"
         else
             gh = CartesianGrid(SVector(-0.4, -1.5, -0.3), (172, 60, 40), SVector(0.05, 0.05, 0.05))
-            cache = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TF), hull, gh)
+            cache = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TF), SDFMesh(hull), gh)
             @test tf_clean(tf_audit(cache, gh))
             r = cut_report(cache)
             @test r.overflow == 0 && r.chain_fail == 0 && r.status_conflict == 0

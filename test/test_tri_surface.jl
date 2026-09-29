@@ -57,7 +57,7 @@ end
     @testset "the surface is the interface that was cut" begin
         lo, hi = SVector(-0.33, -0.41, -0.27), SVector(0.47, 0.29, 0.52)
         box, _, areas = tm_box(lo, hi; n=3)
-        cache = update_cache!(allocate_cache(g, TS), box, g)
+        cache = tm_name_sets!(update_cache!(allocate_cache(g, TS), SDFMesh(box), g), box)
         surf, cells = interface_mesh(cache, g)
         X = [p.coord for p in surf.nodes]
         tris = [e.con for e in surf.elements]
@@ -87,7 +87,7 @@ end
     @testset "concave and mixed creases draw too" begin
         for body in (tm_lblock(a=0.4, hz=0.9, t=SVector(-0.41, -0.39, -0.43))[1],
                      tm_chine_prism(b1=0.33, b2=0.36, nx=5, t=SVector(-0.7, 0.011, -0.31))[1])
-            cache = update_cache!(allocate_cache(g, TS), body, g)
+            cache = update_cache!(allocate_cache(g, TS), SDFMesh(body), g)
             surf, _ = interface_mesh(cache, g)
             X = [p.coord for p in surf.nodes]
             area = sum(c -> ts_tri_area(X, c.con), surf.elements)
@@ -100,7 +100,7 @@ end
         # Planar corners: every reconstructed crease lies on a feature edge of the mesh.
         for body in (tm_prism(L=1.4, beam=0.9, deadrise=20.0, depth=0.6, nx=5, t=SVector(-0.7, 0.013, -0.3))[1],
                      tm_chine_prism(b1=0.33, b2=0.36, nx=5, t=SVector(-0.7, 0.011, -0.31))[1])
-            cache = update_cache!(allocate_cache(g, TS), body, g)
+            cache = update_cache!(allocate_cache(g, TS), SDFMesh(body), g)
             creases = interface_creases(cache, g)
             @test length(creases) > 50
             @test ts_corner_line_error(creases, ts_feature_edges(body, cache)) < 1e-12
@@ -110,7 +110,7 @@ end
         hull, _ = tm_curved_hull(t=SVector(-0.7, 0.013, -0.3), ny=64)
         errs = map((16, 32)) do n
             gg = CartesianGrid(SVector(-1.0, -1.0, -1.0), (n, n, n), SVector(2 / n, 2 / n, 2 / n))
-            cache = update_cache!(allocate_cache(gg, TS), hull, gg)
+            cache = update_cache!(allocate_cache(gg, TS), SDFMesh(hull), gg)
             ts_corner_line_error(interface_creases(cache, gg), ts_feature_edges(hull, cache))
         end
         @test errs[1] < 0.05 * 0.125
@@ -119,7 +119,7 @@ end
 
     @testset "VTK" begin
         hull, _, _ = tm_prism(L=1.4, beam=0.9, deadrise=20.0, depth=0.6, nx=5, t=SVector(-0.7, 0.013, -0.3))
-        cache = update_cache!(allocate_cache(g, TS), hull, g)
+        cache = update_cache!(allocate_cache(g, TS), SDFMesh(hull), g)
         mktempdir() do dir
             files = write_cache_vtk(joinpath(dir, "prism"), cache, g)
             @test length(files) == 2
@@ -133,7 +133,7 @@ end
             @info "gpph_clean.inp not generated (examples/geometry/run_generate_mesh.jl): skipped"
         else
             gh = CartesianGrid(SVector(-0.4, -1.5, -0.3), (172, 60, 40), SVector(0.05, 0.05, 0.05))
-            cache = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TS), hull, gh)
+            cache = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TS), SDFMesh(hull), gh)
             surf, _ = interface_mesh(cache, gh)
             X = [p.coord for p in surf.nodes]
             @test length(surf.elemset) == 8

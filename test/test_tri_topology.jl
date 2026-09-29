@@ -31,7 +31,7 @@ end
 
 """A cache over `grid`, updated from `mesh` under `method`: its topology is `cache.work.topo`."""
 tt_cache(mesh, method=TT_TC; h=TT_H, grid=tt_grid(mesh, h)) =
-    update_cache!(allocate_cache(grid, method), mesh, grid)
+    tm_name_sets!(update_cache!(allocate_cache(grid, method), SDFMesh(mesh), grid), mesh)
 
 tt_topo(mesh, method=TT_TC; kwargs...) = tt_cache(mesh, method; kwargs...).work.topo
 
@@ -145,7 +145,8 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
 
     @testset "forced planar" begin
         sph, _, _ = tm_icosphere(level=2, split=true)
-        topo = tt_topo(sph, TriClippingCutCell(planar_patches=["north"]))
+        # Matched while the topology is built, so by the index name the cut sees.
+        topo = tt_topo(sph, TriClippingCutCell(planar_patches=[tm_set_index(sph, "north")]))
         @test topo.patch_planar[tt_patch(topo, "north")]
         @test !topo.patch_planar[tt_patch(topo, "south")]
         @test_logs (:warn, r"not an element set") match_mode = :any tt_topo(
@@ -186,14 +187,12 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
         @test occursin("two element sets", err(tm_retri(box, tris; sets=overlap)))
         @test occursin("in no element set", err(tm_retri(box, tris; sets=s1[2:end])))
         @test occursin("outside", err(tm_retri(box, tris; sets=[s1; MeshElementSet("bad", [10_000])])))
-        # Not a triangle mesh.
-        quads = Mesh([Point(SVector(0.0, 0.0)), Point(SVector(1.0, 0.0)), Point(SVector(1.0, 1.0))],
-                     [Tri(SVector{3,Int32}(1, 2, 3))])
-        @test_throws ArgumentError tt_cache(quads; grid=grid)
+        # (A mesh that is not 3D triangles no longer reaches the cut: the cache takes an `SDFMesh{3}`,
+        # so dispatch refuses it.)
         # A refused mesh is not remembered: the cache takes a valid one straight after.
         cache = allocate_cache(grid, TT_TC)
-        @test_throws ArgumentError update_cache!(cache, tm_retri(box, inward), grid)
-        @test npatches(update_cache!(cache, box, grid).work.topo) == 6
+        @test_throws ArgumentError update_cache!(cache, SDFMesh(tm_retri(box, inward)), grid)
+        @test npatches(update_cache!(cache, SDFMesh(box), grid).work.topo) == 6
     end
 
     @testset "no element sets: one patch, with a warning" begin

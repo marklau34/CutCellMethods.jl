@@ -2,6 +2,7 @@
 # output of several updates, which must not depend on the thread count.
 
 using CutCellMethods, CartesianMeshes, StaticArrays, MeshLibrary, StructArrays
+using SDFLibrary: SDFMesh
 
 include(joinpath(@__DIR__, "polyline_meshes.jl"))
 
@@ -24,7 +25,7 @@ function digest()
     for body in bodies
         # a fresh update and one on a moved grid, through the same cache
         for gg in (g, CartesianGrid(g.x0 .+ 0.29 .* g.d, Tuple(g.n), g.d))
-            c = update_cache!(cache, poly_mesh(body), gg)
+            c = update_cache!(cache, SDFMesh(poly_mesh(body)), gg)
             for sa in (c.cells, c.info, c.edges.ax, c.edges.ay, c.regions, c.rinfo, c.arcs, c.bsegs)
                 for col in StructArrays.components(sa)
                     h = fold(h, col)

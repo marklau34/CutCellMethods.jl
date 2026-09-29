@@ -23,8 +23,9 @@
 """
     PolylineClippingCutCell(; drop_area=1e-14, closure_tol=1e-13, validate=:topology)
 
-Exact cut cells on a 2D grid from closed polylines: a `Mesh{2}` of `Line` elements whose loops are
-wound counter-clockwise (solid on the left of each element). Exact for the polygon, including sharp
+Exact cut cells on a 2D grid from closed polylines: an `SDFMesh{2}` built from a `Mesh{2}` of `Line`
+elements whose loops are wound counter-clockwise (solid on the left of each element); the cache
+takes the `SDFMesh` and nothing else. Exact for the polygon, including sharp
 corners and trailing edges thinner than a cell, and a cell a thin body splits reports each fluid
 region on its own.
 

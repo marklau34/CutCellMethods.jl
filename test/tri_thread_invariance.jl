@@ -2,6 +2,7 @@
 # output of three updates, which must not depend on the thread count.
 
 using CutCellMethods, CartesianMeshes, StaticArrays, LinearAlgebra, MeshLibrary
+using SDFLibrary: SDFMesh
 
 include(joinpath(@__DIR__, "tri_meshes.jl"))
 
@@ -20,7 +21,7 @@ function digest()
               tm_prism(L=1.4, beam=0.9, deadrise=20.0, depth=0.6, nx=5, t=SVector(-0.7, 0.013, -0.3))[1],
               tm_lblock(a=0.4, hz=0.9, t=SVector(-0.41, -0.39, -0.43))[1])
     for body in bodies
-        c = update_cache!(allocate_cache(g, TriClippingCutCell()), body, g)
+        c = update_cache!(allocate_cache(g, TriClippingCutCell()), SDFMesh(body), g)
         for col in (c.cells.kind, c.cells.ambiguous, c.cells.volume_fraction, c.cells.centroid,
                     c.cells.face_fraction, c.cells.face_centroid_local, c.cells.interface_centroid,
                     c.info.npatch, c.info.rule, c.info.flags, c.info.correction)

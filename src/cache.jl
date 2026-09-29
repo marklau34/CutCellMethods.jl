@@ -1,17 +1,16 @@
 # =====================================
 # Cut-cell storage a consumer keeps between updates
 #
-# `cut_cell_moments(method, domain, geo, cell)` answers one cell and keeps nothing. A cache is the
-# other half: storage allocated once for a grid, refreshed whenever the body moves, and read by
-# whoever needs it. Every method's cache holds that method's own per-cell struct for every cell of
-# the grid, as a `StructArray` -- so a consumer after one field reads it as a plain array
-# (`cache.cells.volume_fraction`), and one after a whole cell reads the struct (`cache.cells[ci]`)
-# through the accessor layer. What else a cache holds depends on what its method needs; see each
-# method's own `cache.jl`.
+# A cache is how every method is read: storage allocated once for a grid, refreshed whenever the
+# body moves, and read by whoever needs it. Every method's cache holds that method's own per-cell
+# struct for every cell of the grid, as a `StructArray` -- so a consumer after one field reads it as
+# a plain array (`cache.cells.volume_fraction`), and one after a whole cell reads the struct
+# (`cache.cells[ci]`). What else a cache holds depends on its method; see each method's own
+# `cache.jl`.
 #
 # Everything is launched through KernelAbstractions over the cache's own backend, so one call
-# serves CPU and GPU. `update_cache!` synchronizes before it returns: the cache exists to be read,
-# and a caller reading it straight after has to see the finished numbers.
+# serves CPU and GPU. `update_cache!` synchronizes before returning, so a caller reading the cache
+# straight after sees the finished numbers.
 
 """
     allocate_cache(grid::CartesianGrid, method::AbstractCutCellMethod; backend=CPU()) -> cache
@@ -23,6 +22,9 @@ documents its fields.
 Seeded as **no body** -- every cell `CELL_OUTSIDE`, all fluid, every face fully open -- by one update
 against `SDFLibrary.EmptyGeo`, so a cache read before its first update describes an empty domain
 rather than uninitialized memory.
+
+[`MarchingSquaresCutCell`](@ref) also takes an `AdaptiveMesh{2}` in place of the grid, with one entry
+per leaf; see its `allocate_cache(mesh, ...)` method.
 """
 function allocate_cache end
 
@@ -36,6 +38,9 @@ through a fixed grid is the grid shifted into the body's own frame. It is conver
 element type once, so a `Float64` grid does not run a `Float32` cache's reconstruction in double.
 
 Blocks until the work has finished, so the cache is readable on return on any backend.
+
+A marching-squares cache allocated on an `AdaptiveMesh{2}` is updated over that tree instead,
+`update_cache!(cache, geo, mesh)`, which must have the leaves it was allocated for.
 """
 function update_cache! end
 
@@ -49,7 +54,8 @@ same way. Each is sized `grid.n`:
 
 - `face_fractions` -- each cell's open fraction of its `2D` faces, direction-indexed
   (`1 = -x`, `2 = +x`, ...). Single-valued: an interior face appears under both of its cells with
-  bitwise the same value. For PLIC this is the **resolved** field, not the one-sided `face_area`.
+  bitwise the same value. For PLIC this is the **resolved** field, the mean of each face's two
+  one-sided candidates.
 - `volume_fractions` -- each cell's **fluid** fraction.
 - `kinds` -- `CELL_INSIDE` / `CELL_OUTSIDE` / `CELL_CUT`.
 
@@ -75,6 +81,20 @@ Each cell's `CELL_INSIDE` / `CELL_OUTSIDE` / `CELL_CUT`, as the cache stores it.
 """
 @inline kinds(cache::AbstractCutCellCache) = cache.cells.kind
 
+"""
+    is_cell_open(cache, ci) -> Bool
+
+Whether any face of cell `ci` of `cache` is open: [`is_cell_open`](@ref)`(m::CutCellData)` asked of
+a cache, read off [`face_fractions`](@ref) alone rather than off the whole stored cell. `ci` indexes
+the cache as its own storage does -- a `CartesianIndex` on a grid, a leaf number on a tree.
+
+Reading only the face fractions is the point: a consumer that edits them in place through
+`face_fractions` (snapping slivers to dry, say) gets its own edit back, and a kernel loads one
+`SVector` rather than the whole struct. `@inline` and allocation-free, so it is legal in a kernel.
+"""
+@inline is_cell_open(cache::AbstractCutCellCache, ci::Union{Integer,CartesianIndex}) =
+    !all(iszero, @inbounds face_fractions(cache)[ci])
+
 # A `StructArray{S}` of `dims` cells on `backend`: every field of `S` gets its own column, allocated
 # there. Built from explicit columns rather than `StructArray{S}(undef, dims)`, which only allocates
 # on the host.
@@ -88,5 +108,14 @@ end
     size(cells) == Tuple(grid.n) || throw(DimensionMismatch(
         "the cache holds $(size(cells)) cells, but `grid` has $(Tuple(grid.n)); a cache is " *
         "allocated for one grid's `n`, and only its origin may move between updates"))
+    return nothing
+end
+
+# A nodal cache's `phi` is one value per grid NODE, which is what its surface marches.
+@noinline function _check_nodal_size(vals::AbstractArray{<:Real,D}, grid::CartesianGrid{D}) where {D}
+    sz = CartesianMeshes.nodegrid_size(grid)
+    size(vals) == sz || throw(DimensionMismatch(
+        "`vals` is $(size(vals)), but `grid` has $sz nodes ($(grid.n) elements per axis); the " *
+        "nodal construction reads one value per grid node"))
     return nothing
 end

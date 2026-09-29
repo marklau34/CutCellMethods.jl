@@ -20,6 +20,7 @@ using CutCellMethods: calc_volume
 
     # Same for the nodal reconstruction: the contour is the circle's, and the fill band never
     # produces a facet of its own.
-    mesh = generate_mesh(bounded, grid, MarchingSquaresCutCell())
-    @test length(mesh.nodes) == length(generate_mesh(circle, grid, MarchingSquaresCutCell()).nodes)
+    contour(geo) = generate_mesh(update_cache!(allocate_cache(grid, MarchingSquaresCutCell()), geo, grid), grid)
+    mesh = contour(bounded)
+    @test length(mesh.nodes) == length(contour(circle).nodes)
 end

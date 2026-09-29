@@ -5,130 +5,108 @@ interface facets, plus the reconstructed surface. The bodies being cut are
 [SDFLibrary.jl](https://github.com/tidalflight/SDFLibrary.jl) geometries, or any callable
 `x -> phi` that is negative inside.
 
-## The API is two calls
+## The API is a cache
 
-```julia
-cut_cell_moments(method, domain, geo, cell)   # one cell's geometry
-generate_mesh(geo, domain, method)            # the reconstructed surface
-```
-
-Nothing is allocated or kept between calls. To get a field over the domain, allocate the arrays you
-want and fill them yourself, keeping only the fields your scheme uses.
-
-`method` is one of three stateless tags, all `<: AbstractCutCellMethod`:
-
-| tag | dimension | reconstruction | `cut_cell_moments` returns |
-|---|---|---|---|
-| `MarchingSquaresCutCell()` | 2D | nodal, from the cell's 4 corner values | `CutCellData{2,T,4,1}` |
-| `MarchingCubesCutCell()` | 3D | nodal, from the cell's 8 corner values | `CutCellData{3,T,6,2}` |
-| `PLICCutCell()` | 2D and 3D | one plane per cell, fitted at its centroid | `PLICCutCellData{D,T,2D}` |
-
-`domain` is a `CartesianGrid`, or an `AdaptiveMesh` for the nodal methods. For the nodal methods,
-`geo` is an `AbstractSDFGeometry`, a callable `x -> phi`, or, on a grid, an array of nodal values
-already sampled on it with `SDFLibrary.sample_sdf(geo, grid)`. PLIC needs an `AbstractSDFGeometry`,
-since it reads the normal from `get_sdf`. `cell` is a `CartesianIndex{D}` on a grid, or a
-`TreeCell` or leaf index on a mesh.
+Allocate a cache once for a grid, update it in place as the body moves, and read it:
 
 ```julia
 using SDFLibrary, CutCellMethods, CartesianMeshes, StaticArrays
 
 geo  = SDFCircle(center=SVector(0.0, 0.0), radius=0.5)
-MS   = MarchingSquaresCutCell()
 grid = CartesianIsoGrid(mincorner=(-1, -1), maxcorner=(1, 1), sz=0.01)
 
-vol = Array{Float64}(undef, Tuple(grid.n))
-ap  = Array{SVector{4,Float64}}(undef, Tuple(grid.n))
-for ci in CartesianIndices(Tuple(grid.n))
-    m = cut_cell_moments(MS, grid, geo, ci)
-    vol[ci] = m.volume_fraction
-    ap[ci]  = m.face_fraction
-end
-
-surface = generate_mesh(geo, grid, MS)        # Mesh{2} of Line elements
-```
-
-`cut_cell_moments` is `@inline`, isbits in and out, and allocation-free, so it is safe to call from
-your own `@batch` loop or KernelAbstractions kernel.
-
-## Caches: a whole grid, kept between updates
-
-When a consumer wants every cell and refreshes them as the body moves, allocate a cache once and
-update it in place:
-
-```julia
 cache = allocate_cache(grid, MarchingSquaresCutCell(); backend=CPU())   # or CUDABackend()
 update_cache!(cache, geo, grid)          # grid may move between updates; its `n` may not
 
 cache.cells.volume_fraction              # one field, as a plain array
 cache.cells[ci]                          # one cell's whole CutCellData
+surface = generate_mesh(cache, grid)     # the contour, a Mesh{2} of Line elements
 ```
 
-Every cache holds its method's per-cell struct for every cell as a `StructArray` in `cells`, and the
-stored cells are bitwise what `cut_cell_moments(method, grid, geo, ci)` returns. A new cache is
+`method` is one of three stateless tags, all `<: AbstractCutCellMethod`:
+
+| tag | dimension | reconstruction | `cache.cells` holds |
+|---|---|---|---|
+| `MarchingSquaresCutCell()` | 2D | nodal, from the cell's 4 corner values | `CutCellData{2,T,4,1}` |
+| `MarchingCubesCutCell()` | 3D | nodal, from the cell's 8 corner values | `CutCellData{3,T,6,2}` |
+| `PLICCutCell()` | 2D and 3D | one plane per cell, fitted at its centroid | `CutCellData{D,T,2D,D-1}` |
+
+`geo` is an `AbstractSDFGeometry` or a callable `x -> phi`; PLIC needs an `AbstractSDFGeometry`,
+since it reads the normal from `get_sdf`. The domain is a `CartesianGrid`, or for
+`MarchingSquaresCutCell` also an `AdaptiveMesh{2}`, where the cache holds one entry per leaf and
+`generate_mesh(cache, mesh)` draws the contour over the tree.
+
+A tree cache is sized for the tree's leaves as they are: after refining or coarsening, allocate
+it again. A device tree cache is updated against the tree adapted to that device
+(`adapt(CuArray, mesh)`).
+
+## What a cache holds
+
+Every cache holds a `CutCellData` for every cell as a `StructArray` in `cells`. A new cache is
 seeded as no body: every cell outside, all fluid, every face open. `update_cache!` synchronizes
 before it returns. Beyond `cells`:
 
 | method | extra field | holds |
 |---|---|---|
-| `MarchingSquaresCutCell`, `MarchingCubesCutCell` | `phi` | the field at every node; `generate_mesh(cache.phi, grid, method)` draws the same reconstruction |
-| `PLICCutCell` | `face_fraction` | each cell's **resolved** face fractions, `SVector{2D}` per cell; read these, not the one-sided `cells.face_area` |
+| `MarchingSquaresCutCell`, `MarchingCubesCutCell` | `phi` | the field at every node; `generate_mesh(cache, grid)` marches it, drawing the same reconstruction |
+| `PLICCutCell` | `normals`, `intercepts`, `is_valid` | every cell's fitted plane and its degenerate-fit flag, as plain arrays sized `grid.n`. This is the only place the plane is kept. `generate_mesh(cache, grid)` clips these |
 
-The full struct costs about 200 bytes a cell in 3D at `Float64`. When only a few fields are wanted
-over a large grid, calling `cut_cell_moments` from your own kernel and keeping just those fields is
-lighter.
+The PLIC cache's `cells.face_fraction` holds the **resolved** face fractions, the mean of each
+face's two one-sided candidates. A centroid plane fit has no centroids to report, so the PLIC
+cells' `centroid`, `face_centroid_local` and `interface_centroid` are `NaN`.
+
+The full struct costs about 200 bytes a cell in 3D at `Float64`.
 
 ## Exports are deliberately narrow
 
-Only the method tags, `cut_cell_moments`, the two return types and `generate_mesh` (re-exported
-from MeshLibrary.jl) are exported. Everything else is qualified:
+Only the method tags, `CutCellData`, `allocate_cache`/`update_cache!` and `generate_mesh`
+(re-exported from MeshLibrary.jl) are exported. Everything else is qualified:
 
 | call | meaning |
 |---|---|
+| `CutCellMethods.face_fractions(cache)`, `volume_fractions`, `kinds` | the three fields every cache holds, as its own storage |
 | `CutCellMethods.face_area_of(cell, dir, cellsize)` | open measure, raw units (length in 2D, area in 3D) |
-| `CutCellMethods.face_fraction_of(cell, dir, cellsize)` | open fraction, dimensionless `[0,1]` |
-| `CutCellMethods.is_face_open(cell, dir)`, `is_cell_open(cell)` | connectivity, **not** `kind` |
+| `CutCellMethods.full_face_area(cellsize, dir)` | a fully open face's measure, the scale a `face_fraction` multiplies |
+| `CutCellMethods.is_cell_open(cell)`, `is_cell_open(cache, ci)` | connectivity, **not** `kind`; the cache form reads `face_fractions` alone, so it sees in-place edits |
 | `CutCellMethods.is_cut`, `is_inside`, `is_outside`, `is_ambiguous` | classification |
-| `CutCellMethods.volume_rule`, `face_rule(cell, dir, domain, idx)`, `interface_rule` | one-point quadrature rules |
-| `CutCellMethods.face_centroid(cell, dir, domain, idx)` | an open face's centroid in global coordinates, from the stored in-plane offsets |
+| `CutCellMethods.face_centroid(cell, dir, nodes)`, `face_centroid(cell, dir, mesh, i)` | an open face's centroid in global coordinates, from the stored in-plane offsets |
 | `CutCellMethods.interface_area(cell, cellsize)`, `interface_normal`, `interface_normal_area` | the interface facet, formed from the face fractions |
-| `CutCellMethods.closure_residual(m, cellsize)`, `closure_residuals`, `cut_cell_report` | verification |
-| `CutCellMethods.calc_volume(geo, grid)`, `calc_volume_simple` | the enclosed volume, from the PLIC fit |
-| `CutCellMethods.cell_indices(mesh, grid)`, `vertex_normals(geo, grid, MC)` | what a marched mesh cannot hold |
+| `CutCellMethods.closure_residual(m, cellsize)`, `cut_cell_report(cache.cells)` | verification |
+| `CutCellMethods.calc_volume(geo, grid)` | the enclosed volume, from the PLIC fit |
+| `CutCellMethods.cell_indices(mesh, grid)` | which cell a marched mesh's triangle came from |
 | `CutCellMethods.CELL_INSIDE`, `CELL_OUTSIDE`, `CELL_CUT` | the `kind` encoding |
 
-The `face_*` readers work on either return type, so one call site serves both reconstructions.
+The `face_*` readers take one `CutCellData`, whichever method or cache it came from.
 `cellsize` is the cell's own extent: `grid.d`, or `get_elem_size(mesh, cell)` on a tree.
 
 ## The traps
 
 These go wrong silently.
 
-- **PLIC apertures are one-sided.** `PLICCutCellData.face_area` is this cell's own plane evaluated
-  on its own faces, so two cells sharing a face report different numbers wherever their fits
-  disagree. Resolve an interior face as the mean of its two slots,
-  `(a[ci].face_area[2c] + a[ci + e_c].face_area[2c - 1]) / 2`, which is bitwise single-valued
-  because `+` is commutative. The nodal methods need no resolution: both cells interpolate the same
-  corner values, so a shared face agrees bitwise by construction.
+- **PLIC face fractions are resolved, not a cell's own.** Each plane is fitted from its own cell,
+  so the two cells sharing a face have different candidates for it wherever their fits disagree.
+  The cache stores their mean, which is bitwise single-valued because `+` is commutative. Its
+  `centroid`, `face_centroid_local` and `interface_centroid` are `NaN`. The nodal methods need no
+  resolution: both cells interpolate the same corner values, so a shared face agrees bitwise by
+  construction.
 - **`volume_fraction` is the fluid fraction** — the part of the cell outside the body. The solid
   fraction `calc_volume` integrates is its complement. `kind` follows the fluid reading:
   `CELL_INSIDE` at `0`, `CELL_OUTSIDE` at `1`, `CELL_CUT` strictly between.
-- **Two sampling routes agree only to roundoff.** Per-corner sampling (pass `geo`) and a nodal
-  block (pass `SDFLibrary.sample_sdf(geo, grid)`) differ by about an ulp per corner. Each is
-  watertight within itself; use one route for both the moments and the surface.
+- **Two samplings of one field agree only to roundoff.** A nodal cache samples its `phi` at
+  `CartesianMeshes.get_node`, while `SDFLibrary.sample_sdf(geo, grid)` builds node coordinates from
+  `grid_lines`; the two differ by about an ulp per node. Each is watertight within itself, so do
+  not compare one against the other bitwise.
 - **Bitwise claims hold within one route and one backend.** `closure_residual` is exactly zero and
   shared faces agree bitwise on one backend. Across CPU and GPU, compare integers exactly and floats
   with a tight `isapprox`.
-- **PLIC requires an isotropic grid, and the per-cell form does not check.**
-  `generate_mesh(geo, grid, PLICCutCell())` throws on an anisotropic grid; `cut_cell_moments` with
-  `PLICCutCell()` assumes it, so it stays callable from a kernel.
+- **PLIC requires an isotropic grid.** The PLIC cache's `allocate_cache` and `update_cache!` throw
+  on an anisotropic one.
 - **Faces are indexed by direction:** `1 = -x`, `2 = +x`, `3 = -y`, `4 = +y`, `5 = -z`, `6 = +z`.
   `CartesianMeshes.direction_axis` and `direction_sign` decode them.
 - **The two normal senses are opposite, on purpose.** Open-face normals point out of the fluid
   region; `interface_normal` points out of the body. The divergence theorem over the fluid region
   is `sum_k A_k n_k - A_int n_int == 0`, which is what `closure_residual` returns. A flux balance
   negates the interface normal at the point of use.
-- **`vertex_normals` marches a second time**, and the march reserves about 0.5 GB at `N = 200`.
-  For a mesh and normals every step, keep your own `MarchingCubes.MC` and call `MarchingCubes.march`.
 - **`ambiguous` cells** (a saddle, or an ambiguous cube interior) have a lumped `interface_normal`:
   right for conservation, wrong for a surface flux. Count them and refine them away.
 
@@ -146,5 +124,5 @@ the geometry a `smoothing` comparable to the cell size.
 
 ## Reference
 
-`dev/dev_cut_cell_api.jl` drives every call above and prints `true` for each invariant. Run it from
-an environment with both packages, for example `julia --project=. dev/dev_cut_cell_api.jl`.
+The invariants above are asserted in `test/`, bitwise where the text says bitwise.
+`dev/dev_mc_moments.jl` checks the marching-cubes moments against the whole-grid march.

@@ -3,15 +3,15 @@
 #
 # The reconstruction is **nodal / shared-vertex**: `phi` is sampled at a cell's *corners*, and each
 # edge's zero crossing is interpolated between its two corner values. Two cells sharing a face read
-# the same corner values at literally the same points, so they get the same crossing -- watertight
-# by construction, with no communication, no cache and no consistency pass, which is what lets a
-# consumer recompute one cell's geometry on demand at any level.
+# the same corner values at the same points, so they get the same crossing -- watertight by
+# construction, with no communication, cache or consistency pass, which lets a consumer recompute one
+# cell's geometry on demand at any level.
 #
-# A per-cell fit -- evaluate the distance at the cell centre and clip the cell against the resulting
-# line, which is what `PLICCutCell` (and [`calc_volume`](@ref)) does -- cannot offer that.
-# The two fits are anchored `O(h)` apart, so the cells flanking a face compute different apertures
-# for it, and a flux leaving one through an opening of one size and entering the other through an
-# opening of another manufactures mass at the face.
+# A per-cell fit -- evaluate the distance at the cell centre and clip against the resulting line,
+# what `PLICCutCell` (and [`calc_volume`](@ref)) does -- cannot offer that: the two fits are anchored
+# `O(h)` apart, so cells flanking a face compute different apertures for it, and a flux leaving one
+# through an opening of one size and entering the other through an opening of another manufactures
+# mass at the face.
 #
 # ---------------------------------------------------------------------------
 # Watertight *to the last bit*, which takes two deliberate choices.
@@ -23,23 +23,22 @@
 #    `_open_fraction` and `_open_segment`, further down this file.
 #
 # 2. Corner *coordinates* come from the integer lattice, `x0 + (index + bit) * h`, never from
-#    arithmetic on a cell's own lower corner: cell A's `lo_A + h` is not bitwise cell B's `lo_B`, so
-#    the two would sample `phi` a few ulp apart. It survives a level jump on an `AdaptiveMesh` too,
-#    since `h/2` is exact and `(2c + 2) * (h/2)` rounds to the same value as `(c + 1) * h`.
+#    arithmetic on a cell's own lower corner: cell A's `lo_A + h` is not bitwise cell B's `lo_B`. It
+#    survives a level jump on an `AdaptiveMesh` too, since `h/2` is exact and `(2c + 2) * (h/2)`
+#    rounds to the same value as `(c + 1) * h`.
 #
 # Neither costs anything, and together they let the contour be stitched by exact coordinate
-# equality -- there is no merge tolerance anywhere in this directory.
+# equality -- no merge tolerance anywhere in this directory.
 #
 # ---------------------------------------------------------------------------
 # What is where.
 #
 # This file: the method tag, the corner conventions everything else is written against, the
-# sampling layer -- `cell_nodes` and `cell_values`, where choice 2 is spent -- and the per-cell
-# construction: `cell_boundary_walk` (per-edge open fractions and open segments),
-# `cell_gap_segments` (the interface segments bridging them) and `cell_interface` composing the two.
-# `moments.jl`: the geometric moments, built on that same walk rather than on a second
-# reconstruction that might disagree with it. `src/quadrature.jl`: the rule types the moments are
-# read through. `surface.jl`: the stitched contour, `generate_mesh`, which walks this same
+# sampling layer (`cell_nodes`, `cell_values`, where choice 2 is spent), and the per-cell
+# construction: `cell_boundary_walk` (per-edge open fractions and segments), `cell_gap_segments`
+# (the interface segments bridging them) and `cell_interface` composing the two. `moments.jl`: the
+# geometric moments, built on that same walk. `cache.jl`: every cell's moments over a grid or tree,
+# kept between updates. `surface.jl`: the stitched contour, `generate_mesh`, walking this same
 # `cell_interface` over a whole domain. `src/cut_cell.jl`: the `CutCellData` the moments come back
 # as, with its accessors and diagnostics.
 #
@@ -102,8 +101,7 @@ a tree, so the shared corner of two neighbouring cells is one expression on one 
 and the two land on bitwise the same point -- including across a level jump. See this file's
 header.
 
-Exposed because it is the contract worth testing directly, and because it is the handle for driving
-[`cell_boundary_walk`](@ref) with corner values from somewhere other than a signed distance field.
+Exposed because it is the contract worth testing directly.
 """
 @inline function cell_nodes(grid::CartesianGrid{2,T}, idx::CartesianIndex{2}) where {T}
     return SVector{4,SVector{2,T}}(ntuple(Val(4)) do k
@@ -127,7 +125,6 @@ end
 """
     cell_values(vals::AbstractMatrix, idx::CartesianIndex{2}, T)
     cell_values(vals::AbstractMatrix, grid::CartesianGrid{2}, idx::CartesianIndex{2})
-    cell_values(field, grid::CartesianGrid{2}, idx::CartesianIndex{2})
     cell_values(field, mesh::AdaptiveMesh{2}, cell::TreeCell{2})
 
 The four corner values of a cell, in the same [`MS_NODE_BITS`](@ref) order [`cell_nodes`](@ref)
@@ -135,23 +132,13 @@ returns.
 
 From a nodal array, `vals` is indexed as a node block (`size(vals) == nodegrid_size(grid)`), so cell
 `(i, j)` reads nodes `(i, j)`, `(i+1, j)`, `(i+1, j+1)`, `(i, j+1)`, converted to `T` -- or, given
-the grid, to the grid's own element type, which lets one `(field_or_vals, grid, idx)` call site
-take either kind of field. From a field on a grid or a tree, the corners are sampled through
-SDFLibrary.jl's `sdf_value`, so `field` may be an `AbstractSDFGeometry` or a callable `x -> phi`.
+the grid, to the grid's own element type. This is how a grid cache reads its own `phi`, which it
+samples at `CartesianMeshes.get_node`, the expression `cell_nodes` places a corner with.
 
-The two field forms sample one cell without touching its neighbours and without allocating, which
-is what lets a consumer run them one thread per cell. Sampling a whole grid's nodes once and
-reading blocks out of it with the `AbstractMatrix` form is cheaper when *every* cell is wanted on
-the host -- one `sdf_value` per node rather than per cell corner, roughly a quarter of the calls.
-
-Those two routes are **not** bitwise interchangeable, though each is internally watertight: this one
-places a corner with `CartesianMeshes.get_node`, while `sample_sdf` builds node coordinates from
-`CartesianMeshes.grid_lines`. The two expressions are algebraically equal and land within an ulp, so
-the moments agree to roundoff and classify every cell identically, but they are not the same bits.
-What matters is preserved either way, because it is a statement *within* one route: two cells
-sharing a face read it from one expression on one pair of integers, so their apertures are bitwise
-equal and the closure is exactly zero. Do not mix the two routes over one domain and then compare
-the seam.
+A tree has no single nodal block, so there the corners are sampled at `cell_nodes` through
+SDFLibrary.jl's `sdf_value`: `field` may be an `AbstractSDFGeometry` or a callable `x -> phi`. That
+samples one leaf without touching its neighbours and without allocating, which is what lets the
+tree kernels run one thread per leaf.
 """
 @inline function cell_values(vals::AbstractMatrix, idx::CartesianIndex{2}, ::Type{T}) where {T}
     i, j = Tuple(idx)
@@ -159,17 +146,8 @@ the seam.
                                   T(vals[i+1, j+1]), T(vals[i, j+1]))
 end
 
-# `T<:Real` is load-bearing, not decoration: `CartesianGrid{D,T<:Real}` constrains its own
-# parameter, so an unconstrained `where {T}` here could be *wider* in the grid argument than the
-# field method below, and narrower in one argument but wider in another is exactly an ambiguity --
-# raised at the call rather than the definition.
 @inline cell_values(vals::AbstractArray{<:Real,2}, ::CartesianGrid{2,T},
                     idx::CartesianIndex{2}) where {T<:Real} = cell_values(vals, idx, T)
-
-@inline function cell_values(field, grid::CartesianGrid{2,T}, idx::CartesianIndex{2}) where {T}
-    nodes = cell_nodes(grid, idx)
-    return SVector{4,T}(ntuple(k -> T(sdf_value(field, @inbounds nodes[k])), Val(4)))
-end
 
 @inline function cell_values(field, mesh::AdaptiveMesh{2,T}, c::TreeCell{2}) where {T}
     nodes = cell_nodes(mesh, c)
@@ -179,25 +157,24 @@ end
 # =====================================
 # The marching squares construction itself: corner values in, contour segments out.
 #
-# One cell at a time, and nothing else -- no domain, no field. The whole algorithm is two steps,
-# and both are exposed because both are useful on their own:
+# One cell at a time -- no domain, no field. Two steps, both exposed because both are useful alone:
 #
 #   1. `cell_boundary_walk` -- walk the four edges counter-clockwise and report, per edge, how much
 #      of it is outside and where that open part runs.
 #   2. `cell_gap_segments` -- the gaps between consecutive open parts *are* the interface.
 #
-# `cell_interface` is the two composed, and is what `generate_mesh` (`surface.jl`) stitches into a
-# contour; `moments.jl` calls the two steps separately, because it wants the apertures from the
-# first as well as the segments from the second. Closing the outside polygon this way -- rather than
-# fitting an interface line and intersecting it with the cell -- is what makes the contour and the
-# apertures agree by construction instead of by luck.
+# `cell_interface` is the two composed, what `generate_mesh` (`surface.jl`) stitches into a contour;
+# `moments.jl` calls the two steps separately since it wants the apertures from the first as well as
+# the segments from the second. Closing the outside polygon this way -- rather than fitting an
+# interface line and intersecting it with the cell -- makes the contour and the apertures agree by
+# construction instead of by luck.
 #
-# The interpolation here is anchored on the **outside** endpoint of an edge, never on the first
-# endpoint in this cell's own traversal order. That is choice 1 of the watertightness argument in
-# this file's header, and `_open_fraction` and `_open_segment` below are where it is spent.
+# The interpolation is anchored on the **outside** endpoint of an edge, never the first endpoint in
+# this cell's own traversal order (choice 1 of the watertightness argument above); `_open_fraction`
+# and `_open_segment` below are where it is spent.
 #
-# Everything in this section is allocation-free, mutation-free and fixed-size, so it is safe to
-# call from inside a GPU kernel.
+# Everything here is allocation-free, mutation-free and fixed-size, so it is safe to call inside a
+# GPU kernel.
 
 @inline _ms_next(k::Int) = k == 4 ? 1 : k + 1
 @inline _ms_prev(k::Int) = k == 1 ? 4 : k - 1
@@ -292,25 +269,24 @@ The interface segments implied by a [`cell_boundary_walk`](@ref): `n` in `0:2` s
 running from `a[s]` to `b[s]`.
 
 These are the gaps between consecutive open parts of the cell boundary: where one open segment ends
-and the next begins somewhere else, the reconstructed interface is what bridges them. Closing the
-outside polygon that way -- rather than fitting the interface and intersecting it with the cell --
-is what makes the reconstruction agree with the apertures by construction.
+and the next begins somewhere else, the reconstructed interface bridges them. Closing the outside
+polygon this way -- rather than fitting the interface and intersecting it with the cell -- makes the
+reconstruction agree with the apertures by construction.
 
-`n` is at most 2 because the number of sign changes around a four-corner walk is even and at most
-four. `n == 2` is the ambiguous saddle: two opposite corners outside, and marching squares cannot
-tell which pair of crossings connects. The answer here is the one naive gap-bridging gives (the
-outside connected through the middle); it is a guess, and a caller that cares should count those
-cells and refine them away rather than trust either resolution.
+`n` is at most 2, since sign changes around a four-corner walk are even and at most four. `n == 2` is
+the ambiguous saddle: two opposite corners outside, and marching squares cannot tell which pair of
+crossings connects. The answer here is naive gap-bridging (outside connected through the middle); a
+caller that cares should count those cells and refine them away rather than trust either resolution.
 
 **Orientation is the walk's, not the public one.** Each gap runs counter-clockwise around the
-outside polygon, continuing the boundary traversal, because [`cut_cell_moments`](@ref) closes that
-polygon with these segments and sums it with an orientation-sensitive shoelace. In that direction
-the implied normal `SVector(v[2], -v[1])` points *into* the body, the opposite of what
-[`interface_normal`](@ref) and the stitched contour report; [`cell_interface`](@ref) is the wrapper
-that swaps the endpoints, and is what a consumer wanting the contour should call.
+outside polygon, continuing the boundary traversal, since [`cut_cell_moments`](@ref) closes that
+polygon with these segments and sums it with an orientation-sensitive shoelace. In that direction the
+implied normal `SVector(v[2], -v[1])` points *into* the body, opposite [`interface_normal`](@ref) and
+the stitched contour; [`cell_interface`](@ref) swaps the endpoints and is what a consumer wanting the
+contour should call.
 
-Fixed-size and free of mutation so it stays kernel-safe; a zero-length gap (consecutive open
-segments meeting at a shared corner) is not a segment and is skipped.
+Fixed-size and mutation-free so it stays kernel-safe; a zero-length gap (consecutive open segments
+meeting at a shared corner) is skipped.
 """
 @inline function cell_gap_segments(present::SVector{4,Bool},
                                    seg_a::SVector{4,SVector{2,T}},
@@ -342,8 +318,6 @@ end
 
 """
     cell_interface(nodes, phi) -> (n, a, b)
-    cell_interface(field, mesh::AdaptiveMesh{2}, cell::TreeCell{2}) -> (n, a, b)
-    cell_interface(field, mesh::AdaptiveMesh{2}, i::Integer) -> (n, a, b)
 
 The reconstructed zero contour inside one cell: `n` segments (`0`, `1`, or `2`), the `s`-th running
 from `a[s]` to `b[s]`.
@@ -375,13 +349,3 @@ the point of use.
     # this function, `interface_normal`, the stitched contour -- points out of it.
     return n, b, a
 end
-
-@inline function cell_interface(field, mesh::AdaptiveMesh{2}, c::TreeCell{2})
-    return cell_interface(cell_nodes(mesh, c), cell_values(field, mesh, c))
-end
-
-@inline cell_interface(field, mesh::AdaptiveMesh{2}, i::Integer) =
-    cell_interface(field, mesh, leaf(mesh, i))
-
-# The 3D method of `cell_interface` is in `marching_cubes/marching_cubes.jl`: triangles rather
-# than segments, off the Lewiner tables, same name and same per-cell contract.

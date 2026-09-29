@@ -1,31 +1,25 @@
 # =====================================
 # Marching cubes: the `sdf == 0` surface of a 3D field, one cell at a time.
 #
-# This file holds the `MarchingCubesCutCell` tag and the header below, the per-cell corner, edge
-# and face conventions, and the per-cell Lewiner dispatch; `moments.jl` builds the cut-cell moments
-# on them. The whole-grid surface -- `generate_mesh`, `cell_indices`, `vertex_normals` -- is
-# `surface.jl`, which marches `MarchingCubes.jl` over the same nodal samples.
+# This file holds the `MarchingCubesCutCell` tag, the per-cell corner/edge/face conventions, and the
+# per-cell Lewiner dispatch; `moments.jl` builds cut-cell moments on them, and `surface.jl` marches
+# `MarchingCubes.jl` over the same nodal samples for the whole-grid surface.
 #
 # =====================================
 # Nodal (shared-vertex) reconstruction
 #
-# The distance is sampled once per grid **node**, and each surface vertex is placed on the grid
-# **edge** between two nodes of opposite sign, by linear interpolation of the two nodal values.
-# Every cell around that edge reads the same two numbers, so they cannot disagree about where the
-# surface crosses it: the vertex is shared, the facets are watertight, and the apertures two cells
-# compute for the face they share are bitwise equal.
+# The distance is sampled once per grid **node**; each surface vertex is placed on the grid **edge**
+# between two nodes of opposite sign, by linear interpolation of the two nodal values. Every cell
+# around that edge reads the same two numbers, so the surface is watertight and the apertures two
+# cells compute for a shared face are bitwise equal.
 #
-# Contrast the *per-cell* reconstruction `PLICCutCell` uses: evaluate the distance and normal at a
-# cell centroid and take them as a tangent plane through that cell. That is the right tool for a
-# volume fraction -- exact for a plane, and it needs no neighbour information -- but each cell fits
-# its plane independently, so adjacent facets do not meet at their shared cell face and the surface
-# comes out as a field of disconnected shards. That is why a field's normal is deliberately never
-# read here.
+# Contrast `PLICCutCell`'s per-cell tangent plane through a cell centroid: exact for a plane and
+# needs no neighbour, but adjacent facets fit independently and don't meet at a shared face, so the
+# surface is a field of disconnected shards. That is why a field's normal is never read here.
 #
-# Linear interpolation along the edge is *exact* wherever the surface is planar (a true signed
-# distance field is linear along any line) and second-order in the cell size where it curves.
-# Measured on a unit sphere at `h = 0.1`: every reconstructed vertex sits within `1.1e-3` of the
-# true surface.
+# Linear interpolation along an edge is exact where the surface is planar and second-order where it
+# curves. Measured on a unit sphere at `h = 0.1`: every vertex sits within `1.1e-3` of the true
+# surface.
 
 """
     MarchingCubesCutCell()
@@ -35,25 +29,21 @@ values at the grid's nodes. A stateless tag, one of the `AbstractCutCellMethod`s
 
     method = MarchingCubesCutCell()
 
-    m = cut_cell_moments(method, grid, geo, ci)       # one cell's moments
-    surface = generate_mesh(geo, grid, method)        # the isosurface, as a mesh
+    cache = update_cache!(allocate_cache(grid, method), geo, grid)
+    cache.cells                                       # every cell's moments
+    surface = generate_mesh(cache, grid)              # the isosurface, as a mesh
 
 The 2D counterpart is [`MarchingSquaresCutCell`](@ref), the same shared-vertex construction one
 dimension down.
 
-[`cut_cell_moments`](@ref)'s 3D methods rebuild one cell from its own eight corner values and so
-need no neighbour and no previous pass -- they work per cell, on demand, at any level of an
-`AdaptiveMesh`. The whole-grid surface is [`generate_mesh`](@ref)`(geo, grid, method)`; reach for
-that when the *surface* is what is wanted, and for these when the *moments* are.
+The cache builds each cell from its own eight corner values with [`cut_cell_moments`](@ref)'s 3D
+primitive, needing no neighbour or previous pass; the surface marches the same corner values.
 
 Axes may differ from each other: nothing here converts a distance into unit-cell coordinates, so
 there is no isotropy requirement, though isotropic cells give the best-shaped facets.
 
-The case resolution is `MarchingCubes.jl`'s, which implements Lewiner et al. (2003), *Efficient
-implementation of marching cubes cases with topological guarantees* -- the variant that resolves the
-ambiguous cube configurations consistently instead of leaving the cracks and spurious handles the
-classic 1987 tables produce. That is what makes the watertightness argued in this file's header
-actually hold.
+Case resolution is `MarchingCubes.jl`'s Lewiner et al. (2003) variant, which resolves ambiguous cube
+configurations consistently -- what makes the watertightness above hold.
 
 Sign conventions line up with no flipping: the field is negative inside, and feeding that straight
 in winds every facet so its normal points **outwards**. A node landing exactly on the surface is
@@ -66,31 +56,27 @@ end
 # =====================================
 # The 3D corner, edge and face conventions everything else in this directory is written against.
 #
-# This is `marching_squares.jl`'s sampling layer one dimension up: the corner *coordinates* and
-# corner *values* of one cell, built so that a corner shared by two cells is the same floating-point
-# number for both. The watertightness argument is that file's -- read its header first.
+# `marching_squares.jl`'s sampling layer one dimension up: corner *coordinates* and corner *values*
+# of one cell, built so a corner shared by two cells is the same floating-point number for both. Read
+# that file's header for the watertightness argument.
 #
 # ---------------------------------------------------------------------------
-# The corner order is `MarchingCubes.jl`'s, and that is not a coincidence we can drop.
+# The corner order is `MarchingCubes.jl`'s and must stay so.
 #
 # `MC_NODE_BITS` is exactly the order `MarchingCubes.lut_entry` classifies corners in, so the case
 # index this package computes indexes that package's Lewiner tables directly. Reordering it would
-# silently select the wrong tiling for every ambiguous cube -- a bug that shows up as a handful of
-# flipped facets in a saddle cell and nowhere else. `test/test_mc_moments.jl` pins the order against
-# `lut_entry` itself rather than against a copy of this comment.
+# silently select the wrong tiling for every ambiguous cube. `test/test_mc_moments.jl` pins the order
+# against `lut_entry` itself.
 #
-# Pleasantly, the bottom four corners of that order *are* `MS_NODE_BITS`, so the `z = 0` face of a
-# cube reads as a marching-squares cell with no permutation at all.
+# The bottom four corners of that order are `MS_NODE_BITS`, so the `z = 0` face of a cube reads as a
+# marching-squares cell unpermuted.
 #
 # ---------------------------------------------------------------------------
-# Choice 3 of the watertightness argument, which is new in 3D.
+# Choice 3 of the watertightness argument, new in 3D.
 #
-# `marching_squares.jl`'s header names two choices that make a shared face bitwise identical for the
-# two cells touching it. In 2D they are enough, because a shared face is an *edge* -- two corners,
-# and `_open_fraction` is anchored so that traversal direction drops out entirely. In 3D a shared
-# face has **four** corners and an orientation-sensitive shoelace sum over them, and permuting the
-# four addends is algebraically irrelevant and numerically is not. So the corner order of a face has
-# to be a property of the *lattice* rather than of whichever cell is asking:
+# A shared face has **four** corners and an orientation-sensitive shoelace sum over them, so the
+# corner order of a face has to be a property of the *lattice* rather than of whichever cell is
+# asking:
 #
 #   3. A face's corners are listed with its two in-plane axes in increasing order (`p < q`, skipping
 #      the face normal's axis), starting at the face's `(0,0)` corner, in `MS_NODE_BITS` order from
@@ -98,9 +84,9 @@ end
 #      then the same four lattice nodes in the same sequence, so their shoelaces are the same
 #      additions in the same order.
 #
-# One corollary, the 3D instance of choice 2 and just as silent: a face's coordinate *along its own
-# normal* must be read off one of that face's corners, never formed as `origin[ax] + cellsize[ax]`,
-# which is not bitwise the neighbour's `origin[ax]`. `moments.jl` takes it from `nodes[...][ax]`.
+# Corollary (the 3D instance of choice 2): a face's coordinate *along its own normal* must be read
+# off one of that face's corners, never formed as `origin[ax] + cellsize[ax]`, which is not bitwise
+# the neighbour's `origin[ax]`. `moments.jl` takes it from `nodes[...][ax]`.
 
 """
     MC_NODE_BITS
@@ -110,12 +96,12 @@ counter-clockwise around the `z = 1` face.
 
     ((0,0,0), (1,0,0), (1,1,0), (0,1,0), (0,0,1), (1,0,1), (1,1,1), (0,1,1))
 
-**This is `MarchingCubes.jl`'s own corner numbering**, which is what lets [`cell_case`](@ref) index
-its Lewiner tables directly; see the corner-convention notes above it. The first four entries are
-[`MS_NODE_BITS`](@ref), so a cube's bottom face reads as a marching-squares cell unpermuted.
+**`MarchingCubes.jl`'s own corner numbering**, which lets [`cell_case`](@ref) index its Lewiner
+tables directly. The first four entries are [`MS_NODE_BITS`](@ref), so a cube's bottom face reads as
+a marching-squares cell unpermuted.
 
-The order [`cell_nodes`](@ref) and [`cell_values`](@ref) return, and the order any array of eight
-corner values handed to this directory must be in.
+The order [`cell_nodes`](@ref) and [`cell_values`](@ref) return, and that any array of eight corner
+values handed to this directory must be in.
 """
 const MC_NODE_BITS = ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
                       (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1))
@@ -142,22 +128,13 @@ edge numbering -- the numbering its tiling tables emit:
 | 5-8   | around `z = 1` | `(5,6) (6,7) (8,7) (5,8)` |
 | 9-12  | the four verticals | `(1,5) (2,6) (3,7) (4,8)` |
 
-Note the tilings emit these codes **1-based**, with `13` meaning the interior vertex
-([`MC_INTERIOR_CODE`](@ref)), while `MarchingCubes.jl`'s *test* tables spell edges **0-based**.
+Note the tilings emit these codes **1-based**, with `13` meaning the interior vertex (slot 13 of
+[`edge_crossings`](@ref)), while `MarchingCubes.jl`'s *test* tables spell edges **0-based**.
 The two bases sit a few lines apart in this file's Lewiner dispatch; they are not interchangeable.
 """
 const MC_EDGE_NODES = ((1, 2), (2, 3), (4, 3), (1, 4),
                        (5, 6), (6, 7), (8, 7), (5, 8),
                        (1, 5), (2, 6), (3, 7), (4, 8))
-
-"""
-    MC_INTERIOR_CODE
-
-The edge code a Lewiner tiling uses for the cube's **interior** vertex -- one past the twelve real
-edges, and slot 13 of [`edge_crossings`](@ref). Cases 6.1.2, 7.3, 10.2, 12.2, 13.3 and 13.4 need a
-vertex that is on no edge, placed at the mean of every crossing on the cube.
-"""
-const MC_INTERIOR_CODE = Int8(13)
 
 """
     MC_FACE_AXES
@@ -210,13 +187,10 @@ end
 
 """
     cell_nodes(grid::CartesianGrid{3}, idx::CartesianIndex{3})
-    cell_nodes(mesh::AdaptiveMesh{3}, cell::TreeCell{3})
-    cell_nodes(mesh::AdaptiveMesh{3}, i::Integer)
 
-The eight corner coordinates of one 3D cell, in [`MC_NODE_BITS`](@ref) order. The 3D methods of the
+The eight corner coordinates of one 3D cell, in [`MC_NODE_BITS`](@ref) order. The 3D method of the
 name [`cell_nodes(grid::CartesianGrid{2}, idx)`](@ref) carries in 2D, built the same way off the
-integer lattice, so the shared corner of two neighbouring cells is bitwise the same point --
-including across a level jump.
+integer lattice, so the shared corner of two neighbouring cells is bitwise the same point.
 """
 @inline function cell_nodes(grid::CartesianGrid{3,T}, idx::CartesianIndex{3}) where {T}
     return SVector{8,SVector{3,T}}(ntuple(Val(8)) do k
@@ -225,30 +199,13 @@ including across a level jump.
     end)
 end
 
-@inline function cell_nodes(mesh::AdaptiveMesh{3,T}, c::TreeCell{3}) where {T}
-    h = get_elem_size(mesh, c)
-    x0 = mesh.base.x0
-    return SVector{8,SVector{3,T}}(ntuple(Val(8)) do k
-        b = MC_NODE_BITS[k]
-        SVector{3,T}(x0[1] + T(c.coord[1] + b[1]) * h[1],
-                     x0[2] + T(c.coord[2] + b[2]) * h[2],
-                     x0[3] + T(c.coord[3] + b[3]) * h[3])
-    end)
-end
-
-@inline cell_nodes(mesh::AdaptiveMesh{3}, i::Integer) = cell_nodes(mesh, leaf(mesh, i))
-
 """
     cell_values(vals::AbstractArray{<:Real,3}, idx::CartesianIndex{3}, T)
     cell_values(vals::AbstractArray{<:Real,3}, grid::CartesianGrid{3}, idx::CartesianIndex{3})
-    cell_values(field, grid::CartesianGrid{3}, idx::CartesianIndex{3})
-    cell_values(field, mesh::AdaptiveMesh{3}, cell::TreeCell{3})
 
-The eight corner values of a 3D cell, in the same [`MC_NODE_BITS`](@ref) order
-[`cell_nodes`](@ref) returns. The 3D counterparts of the 2D methods next door, and they carry that
-docstring's warning unchanged: the nodal-array route and the sample-a-field route are each
-internally watertight but are **not** bitwise interchangeable with each other, so do not mix them
-over one domain and then compare the seam.
+The eight corner values of a 3D cell read out of the nodal block `vals`, in the same
+[`MC_NODE_BITS`](@ref) order [`cell_nodes`](@ref) returns -- the 3D counterparts of the 2D methods
+next door.
 
 These are *raw* corner values. The degenerate-value nudge the reconstruction needs is applied once
 inside [`cut_cell_moments`](@ref) rather than here -- see [`nudge_zeros`](@ref).
@@ -262,38 +219,23 @@ inside [`cut_cell_moments`](@ref) rather than here -- see [`nudge_zeros`](@ref).
                                   T(vals[i+1, j+1, k+1]), T(vals[i, j+1, k+1]))
 end
 
-# `T<:Real` for the reason the 2D method gives: it keeps this strictly more specific than the field
-# method below.
 @inline cell_values(vals::AbstractArray{<:Real,3}, ::CartesianGrid{3,T},
                     idx::CartesianIndex{3}) where {T<:Real} = cell_values(vals, idx, T)
-
-@inline function cell_values(field, grid::CartesianGrid{3,T}, idx::CartesianIndex{3}) where {T}
-    nodes = cell_nodes(grid, idx)
-    return SVector{8,T}(ntuple(k -> T(sdf_value(field, @inbounds nodes[k])), Val(8)))
-end
-
-@inline function cell_values(field, mesh::AdaptiveMesh{3,T}, c::TreeCell{3}) where {T}
-    nodes = cell_nodes(mesh, c)
-    return SVector{8,T}(ntuple(k -> T(sdf_value(field, @inbounds nodes[k])), Val(8)))
-end
 
 """
     nudge_zeros(phi) -> SVector
 
 `phi` with every value closer to zero than `eps(T)` replaced by `+eps(T)`.
 
-`MarchingCubes.lut_entry` does this before classifying a cube, and this package has to do the same:
-a corner sitting exactly on the surface otherwise produces degenerate zero-length edges and
-zero-area facets, and the Lewiner ambiguity tests divide by differences such a corner can make
-exactly zero. Nudging *outward* agrees with this package's `phi >= 0 is outside` convention.
+Needed because a corner sitting exactly on the surface otherwise produces degenerate zero-length
+edges and zero-area facets, and the Lewiner ambiguity tests divide by differences such a corner can
+make exactly zero. Nudging *outward* agrees with this package's `phi >= 0 is outside` convention.
 
-Applied once, to the eight corner values, at the top of [`cut_cell_moments`](@ref), and then used
-for the case index, the six face clips and every edge crossing alike -- applying it to some and not
-others would tear the reconstruction, since the facets would be built from different numbers than
-the apertures they must close against.
+Applied once, at the top of [`cut_cell_moments`](@ref), then used for the case index, the six face
+clips and every edge crossing alike -- applying it inconsistently would tear the reconstruction.
 
-A **pure function of each single value**, which is what keeps it watertight: two cells sharing a
-corner nudge it identically without consulting each other.
+A **pure function of each single value**: two cells sharing a corner nudge it identically without
+consulting each other.
 """
 @inline function nudge_zeros(phi::SVector{N,T}) where {N,T}
     e = eps(T)
@@ -303,51 +245,42 @@ end
 # =====================================
 # The marching cubes construction, one cell at a time: corner values in, interface triangles out.
 #
-# The counterpart of the marching-squares walk (`marching_squares/marching_squares.jl`) one
-# dimension up, playing the same role -- no domain, no field, just eight corner values and the
-# facets they imply. What is different is where
-# the *connectivity* comes from. In 2D the gaps between the open parts of the cell boundary are the
-# interface, read straight off the walk. In 3D the crossings on the cube's twelve edges do not
-# determine how the facets connect: that is the marching cubes case problem, and resolving it
-# consistently is the whole content of the Lewiner tables.
+# The counterpart of the marching-squares walk one dimension up: no domain, no field, just eight
+# corner values and the facets they imply. Unlike 2D, the crossings on the cube's twelve edges do not
+# determine how the facets connect -- that is the marching cubes case problem, resolved by the
+# Lewiner tables.
 #
 # ---------------------------------------------------------------------------
 # Whose tables, and why not our own
 #
-# The case resolution is `MarchingCubes.jl`'s -- Lewiner et al. (2003) -- read **per cell** rather
-# than through its whole-grid `march`. That is the difference between this construction and
-# post-processing a marched surface: nothing here needs a grid, a neighbour or a previous pass, so one cell's facets
-# can be rebuilt on demand at any level of an `AdaptiveMesh`, which is what the moment layer needs.
+# Case resolution is `MarchingCubes.jl`'s -- Lewiner et al. (2003) -- read **per cell** rather than
+# through its whole-grid `march`: one cell's facets are rebuilt from its own eight corner values
+# alone, with no grid, neighbour or previous pass, which is what the moment layer needs.
 #
-# Reading that package's tables rather than writing our own decider is deliberate. The ambiguity
-# resolution is not a detail: get the face test wrong and neighbouring cells disagree about which
-# pair of crossings on their shared face connects, which tears the surface; get the interior test
-# wrong and a cube grows a spurious handle. `test/test_mc_moments.jl` pins this dispatch against
-# `MarchingCubes.march` on random fields, so a version bump that reorders them fails loudly rather
-# than quietly changing every saddle cell.
+# Reading that package's tables rather than writing our own decider is deliberate: get the face test
+# wrong and neighbouring cells disagree about which pair of crossings connects, tearing the surface;
+# get the interior test wrong and a cube grows a spurious handle. `test/test_mc_moments.jl` pins this
+# dispatch against `MarchingCubes.march` on random fields.
 #
 # ---------------------------------------------------------------------------
 # The one thing *not* taken from that package: where a vertex sits on its edge
 #
 # `MarchingCubes.jl` anchors edge interpolation on the edge's low node; this package anchors on the
-# **outside** node, which is choice 1 of `marching_squares.jl`'s watertightness argument. Both are
-# neighbour-consistent, so either would give a watertight surface, and the two differ by an ulp.
+# **outside** node (choice 1 of `marching_squares.jl`'s watertightness argument). Both are
+# neighbour-consistent and watertight, differing by an ulp.
 #
-# The reason it has to be ours is the moment layer: `moments.jl` closes a polyhedron out of six face
-# clips and these triangles and integrates over it, and the face clips come from
-# `cell_boundary_walk`, which is outside-anchored. Mixing the two anchorings would leave the
-# polyhedron with `O(eps)` gaps along every cut edge. `_edge_crossing` below is written so that it
-# reproduces `_open_segment`'s crossing bit for bit.
+# It has to be ours because `moments.jl` closes a polyhedron out of six face clips (from
+# `cell_boundary_walk`, outside-anchored) and these triangles, and integrates over it -- mixing the
+# two anchorings would leave `O(eps)` gaps along every cut edge. `_edge_crossing` reproduces
+# `_open_segment`'s crossing bit for bit.
 #
-# Topology is untouched by this: the case index and every ambiguity test read *signs* and corner
-# values, never positions.
+# The case index and every ambiguity test read *signs* and corner values, never positions.
 
 # One cube edge's crossing point, bitwise equal to the one `_open_segment` places on that edge.
 #
-# Both spellings anchor on the outside end, which is what makes them agree and what makes two cells
-# sharing an edge agree. Note the expression is symmetric under swapping the two endpoints -- the
-# outside end is always the base -- so it does not matter which corner of the edge is called `a`,
-# and `MC_EDGE_NODES`' orientation carries no arithmetic weight.
+# Both anchor on the outside end, so two cells sharing an edge agree. The expression is symmetric
+# under swapping the endpoints -- the outside end is always the base -- so it doesn't matter which
+# corner is called `a`, and `MC_EDGE_NODES`'s orientation carries no arithmetic weight.
 @inline function _edge_crossing(pa::SVector{3,T}, pb::SVector{3,T}, fa::T, fb::T) where {T}
     s = _open_fraction(fa, fb)
     return fa >= zero(T) ? pa + s * (pb - pa) : pb + s * (pa - pb)
@@ -362,7 +295,7 @@ Where the reconstructed surface meets each of the cube's twelve edges.
 - `points[e]` -- the crossing on edge `e`, meaningless where `crossed[e]` is false.
 - `points[13]` -- the cube's **interior vertex**, the mean of every crossing on the cube, which is
   where `MarchingCubes.jl` puts the extra vertex cases 6.1.2, 7.3, 10.2, 12.2, 13.3 and 13.4 need.
-  Indexed by [`MC_INTERIOR_CODE`](@ref), so a tiling's edge code indexes this vector directly.
+  A tiling's edge code, `13` included, therefore indexes this vector directly.
 
 Thirteen slots rather than twelve plus a flag: the interior vertex costs a dozen adds on a cell that
 is already being reconstructed, and paying that unconditionally removes a branch from every consumer.
@@ -418,13 +351,12 @@ end
 # =====================================
 # The two ambiguity tests, ported from `MarchingCubes.jl` onto `SVector` corner values
 #
-# Ported rather than called because that package's versions take an `MVector{8}` scratch buffer off
-# an `MC` object, which is a whole-grid structure this file deliberately does not have. The
-# arithmetic is transcribed unchanged -- these decide topology, and "equivalent" is not good enough;
+# Ported rather than called: that package's versions take an `MVector{8}` scratch buffer off an `MC`
+# object, a whole-grid structure this file doesn't have. Arithmetic is transcribed unchanged;
 # `test/test_mc_moments.jl` compares the resulting triangulation against `march` case by case.
 #
-# Note the edge indices in the *test* tables are 0-based, while the edge codes in the *tiling*
-# tables are 1-based. Both appear in this file, a few lines apart.
+# Edge indices in the *test* tables are 0-based; edge codes in the *tiling* tables are 1-based. Both
+# appear in this file, a few lines apart.
 
 """
     MC_TEST_FACE_QUADS
@@ -456,17 +388,16 @@ const MC_FACE_TEST_CODE = ntuple(6) do dir
 end
 
 # Whether the two components meeting at ambiguous face `face` connect through it -- the asymptotic
-# decider, which reads the sign of the bilinear saddle value on that face.
+# decider, reading the sign of the bilinear saddle value on that face.
 #
-# `face` is signed: a negative code means invert the result, which is how the tables spell "this
-# configuration wants the complementary answer".
+# `face` is signed: a negative code inverts the result, how the tables spell "this configuration
+# wants the complementary answer".
 #
-# **Reads only that face's four corner values**, which is what makes it safe for `moments.jl` to
-# resolve a shared face with: the two cells touching a face give it the same four numbers. They
-# spell the face with different codes (cell A's `+x` is cell B's `-x`), and the two spellings order
-# the quadruple oppositely, so `A*C - B*D` comes out negated and `A` lands on the other diagonal --
-# but on a saddle those two sign flips cancel and the answer is the same. `test/test_mc_moments.jl`
-# asserts that agreement directly rather than trusting this paragraph.
+# **Reads only that face's four corner values**, so `moments.jl` can safely use it to resolve a
+# shared face: the two cells touching a face give it the same four numbers, spelled with different
+# codes (cell A's `+x` is cell B's `-x`) that order the quadruple oppositely -- so `A*C - B*D` and
+# `A` both flip sign, but on a saddle the two flips cancel and the answer is the same.
+# `test/test_mc_moments.jl` asserts that agreement directly.
 @inline function _test_face(cb::SVector{8,T}, face::Integer) where {T}
     q = @inbounds MC_TEST_FACE_QUADS[abs(face)]
     @inbounds A, B, C, D = cb[q[1]], cb[q[2]], cb[q[3]], cb[q[4]]
@@ -701,11 +632,9 @@ function cell_triangles(phi::SVector{8,T}) where {T}
             return 12, _tris_from(MC.tiling13_4[cfg][sc-18], 12)
         elseif sc <= 26
             sub = sc - 22
-            # `[6]`, not `[7]`, to match `MarchingCubes.march` exactly -- keeping this dispatch and
-            # the meshed surface one reconstruction is worth more than matching Lewiner's reference
-            # indexing, which takes the 7th entry here. It makes no behavioural difference either
-            # way: `_test_interior` consumes only `sign(s)`, and entries 6 and 7 of `test13` are
-            # both positive in both configurations.
+            # `[6]`, not `[7]` (Lewiner's reference indexing): keeping this dispatch and the meshed
+            # surface as one reconstruction matters more. No behavioural difference -- `_test_interior`
+            # only consumes `sign(s)`, and entries 6 and 7 of `test13` are both positive here.
             return _test_interior(case, phi, cfg, sub, MC.test13[cfg][6]) ?
                    (6, _tris_from(MC.tiling13_5_1[cfg][sub], 6)) :
                    (10, _tris_from(MC.tiling13_5_2[cfg][sub], 10))
@@ -720,46 +649,3 @@ function cell_triangles(phi::SVector{8,T}) where {T}
         return 4, _tris_from(MC.tiling14[cfg], 4)
     end
 end
-
-"""
-    cell_interface(nodes, phi) -> (n, a, b, c)
-    cell_interface(field, mesh::AdaptiveMesh{3}, cell::TreeCell{3}) -> (n, a, b, c)
-    cell_interface(field, mesh::AdaptiveMesh{3}, i::Integer) -> (n, a, b, c)
-
-The reconstructed zero isosurface inside one cell: `n` triangles, the `t`-th with vertices `a[t]`,
-`b[t]`, `c[t]`.
-
-    n, a, b, c = cell_interface(nodes, phi)
-    for t in 1:n
-        # triangle a[t], b[t], c[t]
-    end
-
-The 3D method of the 2D name next door, which returns segments instead; this is the per-cell form of
-what [`MarchingCubesCutCell`](@ref) marches over a whole grid.
-
-Vertices are exact across cells: a triangle reaching a cell face ends on a crossing the neighbouring
-cell computes from the same two corner values with the same expression, bit for bit, so the surface
-is watertight with no merge tolerance. Triangles are wound so `cross(b - a, c - a)` points **out of
-the body**, the sense [`interface_normal`](@ref) reports and the 2D `cell_interface` orients for.
-
-Unlike the 2D method this one does **not** re-anchor an orientation convention -- there is no
-shoelace below it whose winding had to be the other way, so the tables' own winding is the public
-one.
-"""
-@inline function cell_interface(nodes::SVector{8,SVector{3,T}}, phi::SVector{8,T}) where {T}
-    p = nudge_zeros(phi)
-    n, codes = cell_triangles(p)
-    _, pts = edge_crossings(nodes, p)
-    z = zero(SVector{3,T})
-    a = SVector{12,SVector{3,T}}(ntuple(t -> t <= n ? @inbounds(pts[codes[t][1]]) : z, Val(12)))
-    b = SVector{12,SVector{3,T}}(ntuple(t -> t <= n ? @inbounds(pts[codes[t][2]]) : z, Val(12)))
-    c = SVector{12,SVector{3,T}}(ntuple(t -> t <= n ? @inbounds(pts[codes[t][3]]) : z, Val(12)))
-    return n, a, b, c
-end
-
-@inline function cell_interface(field, mesh::AdaptiveMesh{3}, c::TreeCell{3})
-    return cell_interface(cell_nodes(mesh, c), cell_values(field, mesh, c))
-end
-
-@inline cell_interface(field, mesh::AdaptiveMesh{3}, i::Integer) =
-    cell_interface(field, mesh, leaf(mesh, i))

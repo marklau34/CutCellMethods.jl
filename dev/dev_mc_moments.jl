@@ -4,7 +4,7 @@
 # `marching_cubes/moments.jl` reconstructs one cell at a time: it reads the Lewiner tables per cube
 # and closes the cell's polyhedron out of six face clips plus the facets those tables produce. The
 # obvious worry about that design is that it is a *second* implementation of a reconstruction the
-# package already has -- `generate_mesh(geo, grid, MarchingCubesCutCell())`, which runs `MarchingCubes.march` over the
+# package already has -- `generate_mesh(cache, grid)` on a `MarchingCubesCutCell` cache, which runs `MarchingCubes.march` over the
 # whole grid -- and that the two could drift.
 #
 # This script is the answer to that worry. It takes the marched surface, sorts its triangles back
@@ -19,8 +19,8 @@
 #
 # `test/test_mc_moments.jl` pins (1) exhaustively over all 256 sign patterns on a single cube, which
 # is the stronger statement about the *tables*. What this adds is the whole-grid setting: real
-# fields, real cell indexing, shared vertices, and the `sample_sdf` node coordinates rather than
-# `cell_nodes`'.
+# fields, real cell indexing, shared vertices, and the march's own node coordinates rather than
+# `cell_nodes`'. Both sides read one cache's `phi`, so they see the same corner values.
 #
 # ---------------------------------------------------------------------------
 # Why this comparison is to a tolerance and not bitwise
@@ -32,7 +32,7 @@
 #    lets the face clips and the facets share a crossing exactly. See
 #    `marching_cubes/marching_cubes.jl`.
 #  * the march builds node coordinates from `CartesianMeshes.grid_lines` while `cell_nodes` builds
-#    them from `get_node`. Algebraically equal, not bitwise. `cell_values`' docstring says so.
+#    them from `get_node`. Algebraically equal, not bitwise.
 #
 # Both are `O(eps)` in a cell coordinate, so a mismatch that matters shows up orders of magnitude
 # above the threshold used here rather than near it.
@@ -41,7 +41,7 @@
 
 using SDFLibrary
 using CutCellMethods
-using CutCellMethods: cell_nodes, cell_values, cell_interface, nudge_zeros,
+using CutCellMethods: cut_cell_moments, cell_nodes, cell_values, cell_triangles, edge_crossings, nudge_zeros,
                       is_cut, is_ambiguous, interface_normal_area, interface_area, interface_normal,
                       closure_residual, full_face_area, cell_indices
 using CartesianMeshes
@@ -52,11 +52,24 @@ using Printf
 grid3(N; lo = -1.5, span = 3.0) =
     CartesianGrid(SVector(lo, lo, lo), (N, N, N), SVector(span/N, span/N, span/N))
 
+"""A marching-cubes cache over `grid`, updated from `geo`: the nodal field in `phi`, the moments
+built from it in `cells`."""
+mc_cache(geo, grid) = update_cache!(allocate_cache(grid, MarchingCubesCutCell()), geo, grid)
+
+"""One cube's interface triangles from the per-cell Lewiner dispatch: `cell_triangles`' tiling on
+`edge_crossings`' points, the facets the moment construction integrates over."""
+function cell_facets(nodes, phi)
+    p = nudge_zeros(phi)
+    n, codes = cell_triangles(p)
+    _, pts = edge_crossings(nodes, p)
+    return [(pts[codes[t][1]], pts[codes[t][2]], pts[codes[t][3]]) for t in 1:n]
+end
+
 wiggle(x) = sin(2.7x[1]) * sin(3.1x[2]) * sin(2.3x[3]) - 0.12
 
-"""Triangles of the whole-grid march, bucketed by the cell each one came from."""
-function marched_by_cell(geo, grid)
-    mesh = generate_mesh(geo, grid, MarchingCubesCutCell(); warn = false)
+"""Triangles of the whole-grid march over `cache`'s field, bucketed by the cell each one came from."""
+function marched_by_cell(cache, grid)
+    mesh = generate_mesh(cache, grid; warn = false)
     owner = cell_indices(mesh, grid)
     x = mesh.nodes.coord
     buckets = Dict{Int,Vector{NTuple{3,SVector{3,Float64}}}}()
@@ -91,7 +104,8 @@ end
 function compare_to_march(geo, N, tag)
     grid = grid3(N)
     h = SVector(grid.d...)
-    buckets = marched_by_cell(geo, grid)
+    cache = mc_cache(geo, grid)
+    buckets = marched_by_cell(cache, grid)
     lin = LinearIndices(grid.n)
 
     ncut = 0; nmatch = 0; ncount_bad = 0; ngeom_bad = 0
@@ -100,15 +114,14 @@ function compare_to_march(geo, N, tag)
 
     for idx in CartesianIndices(grid.n)
         nodes = cell_nodes(grid, idx)
-        phi = cell_values(geo, grid, idx)
+        phi = cell_values(cache.phi, grid, idx)
         m = cut_cell_moments(nodes, phi, h)
         worst_res = max(worst_res, maximum(abs.(closure_residual(m, h))))
         is_cut(m) || continue
         ncut += 1
 
         ref = get(buckets, lin[idx], NTuple{3,SVector{3,Float64}}[])
-        n, a, b, c = cell_interface(nodes, nudge_zeros(phi))
-        mine = [(a[t], b[t], c[t]) for t in 1:n]
+        mine = cell_facets(nodes, phi)
 
         if length(ref) != length(mine)
             ncount_bad += 1
@@ -144,7 +157,7 @@ function convergence(geo, exact_volume, tag; Ns = (20, 40, 80))
     prev = NaN
     for N in Ns
         grid = grid3(N)
-        M = cut_cell_moments(geo, grid)
+        M = mc_cache(geo, grid).cells
         vc = prod(SVector(grid.d...))
         outside = sum(m.volume_fraction for m in M) * vc
         body = 27.0 - outside
@@ -169,11 +182,12 @@ Conservation wants the first, a surface force wants the second."""
 function area_gap(geo, N, tag)
     grid = grid3(N)
     h = SVector(grid.d...)
-    buckets = marched_by_cell(geo, grid)
+    cache = mc_cache(geo, grid)
+    buckets = marched_by_cell(cache, grid)
     lin = LinearIndices(grid.n)
     lumped = 0.0; faceted = 0.0; worst_ratio = 1.0
     for idx in CartesianIndices(grid.n)
-        m = cut_cell_moments(cell_nodes(grid, idx), cell_values(geo, grid, idx), h)
+        m = cache.cells[idx]
         is_cut(m) || continue
         tris = get(buckets, lin[idx], NTuple{3,SVector{3,Float64}}[])
         isempty(tris) && continue

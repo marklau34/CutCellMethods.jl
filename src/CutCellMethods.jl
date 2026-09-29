@@ -2,7 +2,8 @@ module CutCellMethods
 
 # =====================================
 # Cut-cell methods
-export AbstractCutCellMethod, MarchingSquaresCutCell, MarchingCubesCutCell, PLICCutCell
+export AbstractCutCellMethod, MarchingSquaresCutCell, MarchingCubesCutCell, PLICCutCell,
+       TriClippingCutCell, PolylineClippingCutCell
 export cut_cell_moments
 export CutCellData, PLICCutCellData
 export allocate_cache, update_cache!
@@ -32,6 +33,10 @@ using CartesianMeshes: direction_axis, direction_sign
 using SDFLibrary: SDFLibrary, AbstractSDFGeometry, EmptyGeo, get_sdf, sdf_value, sample_sdf,
                   sample_sdf!
 
+# Exact orientation predicates for the polyline clipper's combinatorics, which run on the host.
+# Qualified at every use (`ExactPredicates.orient`), so nothing of it lands in this namespace.
+using ExactPredicates: ExactPredicates
+
 # The surfaces are methods of `MeshLibrary.generate_mesh`, so it is re-exported: `using
 # CutCellMethods` alone is enough to draw one. SDFLibrary.jl re-exports the same function, so
 # loading both is no clash.
@@ -60,6 +65,8 @@ include("cache.jl")
 include("plic/include.jl")
 include("marching_squares/include.jl")
 include("marching_cubes/include.jl")
+include("tri_clipping/include.jl")
+include("polyline_clipping/include.jl")
 include("volume.jl")
 
 end # module CutCellMethods

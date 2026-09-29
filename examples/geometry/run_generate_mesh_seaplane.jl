@@ -3,11 +3,11 @@ import Gmsh: gmsh
 using GmshUtilities
 using MeshLibrary
 
-stp_name = joinpath(@__DIR__, "gpph_clean.step")
-save_name = joinpath(@__DIR__,  "gpph_clean")
+stp_name = joinpath(@__DIR__, "AMRA_Subscale_v2_fuselage.step")
+save_name = joinpath(@__DIR__,  "AMRA_Subscale_v2_fuselage")
 show_gmsh = true
 
-sizefac = 0.5
+sizefac = 0.3
 
 # Initialize setup
 gmsh_config = GmshConfig()
@@ -43,7 +43,7 @@ gmsh.option.setNumber("Mesh.RecombineOptimizeTopology", 0)
 gmsh.option.setNumber("Mesh.Smoothing", 10)
 
 # Physical groups
-for i in 1:8
+for i in 1:39
     add_params!(gmsh_config, GmshPhysicalGroup(name="surface_$i", ndims=2, tags=[i,]))
 end
 

@@ -149,6 +149,16 @@ end
         @test CutCellMethods.face_fractions(pl) === pl.face_fraction      # resolved, not face_area
         @test CutCellMethods.volume_fractions(pl) === pl.cells.volume_fraction
         @test CutCellMethods.kinds(pl) === pl.cells.kind
+        # The polyline clipper takes a line mesh rather than a field: a 64-gon of the same circle.
+        circ = [CACHE_CIRCLE.center + CACHE_CIRCLE.radius * SVector(cos(2π * k / 64), sin(2π * k / 64))
+                for k in 0:63]
+        poly = Mesh([Point(p) for p in circ], [Line(Int32(k), Int32(mod1(k + 1, 64))) for k in 1:64])
+        pc = update_cache!(allocate_cache(CACHE_G2, PolylineClippingCutCell()), poly, CACHE_G2)
+        @test CutCellMethods.face_fractions(pc) === pc.cells.face_fraction
+        @test CutCellMethods.volume_fractions(pc) === pc.cells.volume_fraction
+        @test CutCellMethods.kinds(pc) === pc.cells.kind
+        @test count(==(CELL_CUT), pc.cells.kind) > 100
+        @test shared_face_mismatches(pc.cells.face_fraction) == 0
 
         ci = findfirst(==(CELL_CUT), ms.cells.kind)
         CutCellMethods.face_fractions(ms)[ci] = zero(SVector{4,Float64})

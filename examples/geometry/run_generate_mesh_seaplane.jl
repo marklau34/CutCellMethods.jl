@@ -69,7 +69,6 @@ if show_gmsh && !("-nopopup" in ARGS)
     gmsh.fltk.run()
 end
 
-gmsh.write(save_name * ".msh")
 gmsh.write(save_name * ".inp")
 
 gmsh.finalize()

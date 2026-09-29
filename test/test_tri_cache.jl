@@ -4,8 +4,8 @@
 # What is asserted:
 #
 #   * a fresh cache reads as no body, and an update against an empty mesh returns it there
-#   * the bins are exactly the documented test, conservative against a real clip, and
-#     deterministic
+#   * the bins an update leaves in `cache.work` are exactly the documented test, conservative
+#     against a real clip, and deterministic
 #   * every cell centre is classified as the analytic inside test says: an axis-aligned box whose
 #     faces lie on cell-centre planes and on cell-face planes, rows through mesh vertices and
 #     edges, a rotated box, the prism hull, the L-block, a sphere, and the GPPH hull against its
@@ -16,8 +16,7 @@
 
 using KernelAbstractions
 using CutCellMethods: TriClippingCutCellCache, TriClippingCutCellView, CELL_INSIDE, CELL_OUTSIDE,
-                      _bin_block!, _bin_cells!, _bin_rows!, _block_dims, _plane_reaches,
-                      reset_topology!
+                      TriScratch, pg_tri_box!, pg_area_moment, reset_topology!
 
 isdefined(@__MODULE__, :tm_box) || include("tri_meshes.jl")
 isdefined(@__MODULE__, :shared_face_mismatches) || function shared_face_mismatches(ff::AbstractArray{<:Any,D}) where {D}
@@ -68,8 +67,8 @@ end
 
 # A convex polyhedron's inside test and distance to its surface, from its triangles' planes.
 function tcc_convex(mesh)
-    X = CutCellMethods._mesh_coords(mesh)
-    planes = map(CutCellMethods._mesh_tris(mesh)) do c
+    X = tm_coords(mesh)
+    planes = map(tm_tris(mesh)) do c
         n = normalize(cross(X[c[2]] - X[c[1]], X[c[3]] - X[c[1]]))
         (n, dot(n, X[c[1]]))
     end
@@ -179,18 +178,24 @@ end
 
     @testset "bins: the documented test, conservative, deterministic" begin
         sph, _, _ = tm_icosphere(r=0.6, c=SVector(0.05, -0.03, 0.02), level=2)
-        X = CutCellMethods._mesh_coords(sph)
-        tris = CutCellMethods._mesh_tris(sph)
-        tols = CutCellMethods.TriClipTols(TCC, g)
-        lo_, hi_ = SVector{3,Int32}[], SVector{3,Int32}[]
-        block = _bin_block!(lo_, hi_, X, tris, g, tols.margin)
-        s1, l1, s2, l2 = Int32[], Int32[], Int32[], Int32[]
-        _bin_cells!(s1, l1, X, tris, lo_, hi_, block, g, tols.margin)
-        _bin_cells!(s2, l2, X, tris, lo_, hi_, block, g, tols.margin)
-        @test s1 == s2 && l1 == l2
-        dims = _block_dims(block)
-        δ = SVector{3,Float64}(tols.margin)
-        scr = CutCellMethods.TriScratch(KernelAbstractions.CPU(), Float64, 1)
+        X = tm_coords(sph)
+        tris = tm_tris(sph)
+        cache = update_cache!(allocate_cache(g, TCC), sph, g)
+        w = cache.work
+        block = w.block
+        s1, l1 = copy(w.bin_start), copy(w.bin_tri)
+        r1, rl1 = copy(w.row_start), copy(w.row_tri)
+        # Deterministic: the same body binned again, into the same grow-only buffers, bins the same.
+        update_cache!(cache, sph, g)
+        @test w.bin_start == s1 && w.bin_tri == l1
+        @test w.row_start == r1 && w.row_tri == rl1
+        dims = block.hi - block.lo .+ 1
+        δ = SVector{3,Float64}(cache.tols.margin)
+        # The documented test: the triangle's box grown by `δ` overlaps the cell, and its plane
+        # passes within the cell's half-extent grown by `δ` of the cell centre, measured as the
+        # support along the normal -- with the same slack the binning takes, towards keeping it.
+        reaches(n, p, c, r) = abs(dot(n, c - p)) <= sum(abs.(n) .* r) * (1 + 1e-12) + 1e-12 * maximum(r)
+        scr = TriScratch(KernelAbstractions.CPU(), Float64, 1)
         mismatch = 0
         missed = 0
         for (l, ci) in enumerate(CartesianIndices(ntuple(a -> block.lo[a]:block.hi[a], 3)))
@@ -201,21 +206,18 @@ end
             hi = c + g.d / 2 + δ
             for (t, cc) in enumerate(tris)
                 p1, p2, p3 = X[cc[1]], X[cc[2]], X[cc[3]]
+                n = normalize(cross(p2 - p1, p3 - p1))
                 boxhit = all(min.(p1, p2, p3) .<= hi) && all(max.(p1, p2, p3) .>= lo)
-                want = boxhit && _plane_reaches(normalize(cross(p2 - p1, p3 - p1)), p1, c, g.d / 2 + δ)
+                want = boxhit && reaches(n, p1, c, g.d / 2 + δ)
                 mismatch += want != (t in bin)
                 # Conservative: any triangle with area in the grown cell is binned there.
-                b, m = CutCellMethods.pg_tri_box!(scr, 1, p1, p2, p3, lo, hi, 1e-14)
-                A, _ = CutCellMethods.pg_area_moment(scr, 1, b, m, normalize(cross(p2 - p1, p3 - p1)))
+                b, m = pg_tri_box!(scr, 1, p1, p2, p3, lo, hi, 1e-14)
+                A, _ = pg_area_moment(scr, 1, b, m, n)
                 missed += (A > 0) && !(t in bin)
             end
         end
         @test mismatch == 0
         @test missed == 0
-        r1, rl1, r2, rl2 = Int32[], Int32[], Int32[], Int32[]
-        _bin_rows!(r1, rl1, X, tris, block, g)
-        _bin_rows!(r2, rl2, X, tris, block, g)
-        @test r1 == r2 && rl1 == rl2
         @test length(r1) == dims[2] * dims[3] + 1
     end
 
@@ -277,8 +279,8 @@ end
             # A coarse grid: the reference sums a solid angle over every triangle for every cell.
             gh = CartesianGrid(SVector(-0.4, -1.5, -0.3), (44, 15, 10), SVector(0.2, 0.2, 0.2))
             c = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TCC), h, gh)
-            X = CutCellMethods._mesh_coords(h)
-            tris = CutCellMethods._mesh_tris(h)
+            X = tm_coords(h)
+            tris = tm_tris(h)
             bad = 0
             ambiguous = 0
             for ci in CartesianIndices(Tuple(gh.n))
@@ -303,9 +305,9 @@ end
         @test eltype(c32.cells) === CutCellData{3,Float32,6,2}
         c64 = update_cache!(allocate_cache(g, TCC), sph, g)
         # Away from the surface, where single precision cannot move a centre across it.
-        X = CutCellMethods._mesh_coords(sph)
+        X = tm_coords(sph)
         planes = map(c -> (n = normalize(cross(X[c[2]] - X[c[1]], X[c[3]] - X[c[1]])); (n, dot(n, X[c[1]]))),
-                     CutCellMethods._mesh_tris(sph))
+                     tm_tris(sph))
         clear(ci) = abs(maximum(p -> dot(p[1], tcc_centre(g, ci)) - p[2], planes)) > 1e-5
         @test count(ci -> clear(ci) && c32.cells.kind[ci] != c64.cells.kind[ci], idx) == 0
         if HAS_GPU

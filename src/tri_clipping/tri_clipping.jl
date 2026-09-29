@@ -10,10 +10,8 @@
 # or a chine) or the fluid is (a concave one), so a planar corner comes out exact rather than
 # chamfered the way a single level set or a single plane per cell would leave it.
 #
-# The construction is the brief's (`Brief Cut-cell geometry from segmented triangle patches.md`),
-# with its closure formula's sign corrected: with `n_int` out of the body, as everywhere in this
-# package, the interface vector area is `+sum_k A_k n_k`, which is what `interface_normal_area`
-# forms from the stored face fractions.
+# With `n_int` out of the body, as everywhere in this package, the interface vector area is
+# `+sum_k A_k n_k`, which is what `interface_normal_area` forms from the stored face fractions.
 #
 # Unlike the other methods this one exists only as a cache: a cell's apertures are resolved from
 # its neighbours' fits, and an uncut cell is classified by a ray cast along its grid row, so there

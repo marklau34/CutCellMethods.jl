@@ -1,7 +1,8 @@
 # =====================================
 # Tri clipping, phase 2: validating a mesh and reading its patches.
 #
-# What is asserted:
+# A cache validates and segments its mesh on the first update, and keeps the result as
+# `cache.work.topo`; that is what is read here. What is asserted:
 #
 #   * every malformed input is refused with an ArgumentError naming the problem: a collapsed
 #     triangle, an open edge, a non-manifold edge, a triangle wound the wrong way, a surface wound
@@ -13,13 +14,26 @@
 #   * the mesh's own totals against the analytic ones
 #   * the GPPH hull (gpph_clean.inp) loads and validates
 
-using CutCellMethods: build_topology, TriTopology, npatches, PAIR_CONVEX, PAIR_CONCAVE,
-                      PAIR_TANGENT, _patch_planes, _mesh_coords, _mesh_tris
+using CutCellMethods: TriTopology, npatches, PAIR_CONVEX, PAIR_CONCAVE, PAIR_TANGENT
 
 include("tri_meshes.jl")
 
 const TT_H = 0.05
 const TT_TC = TriClippingCutCell()
+
+"""A grid of cubic cells `h` across round `mesh`, a few cells clear of it on every side."""
+function tt_grid(mesh, h)
+    X = tm_coords(mesh)
+    lo = reduce((a, b) -> min.(a, b), X) .- 3h
+    hi = reduce((a, b) -> max.(a, b), X) .+ 3h
+    return CartesianGrid(lo, Tuple(ceil.(Int, (hi - lo) ./ h)), SVector(h, h, h))
+end
+
+"""A cache over `grid`, updated from `mesh` under `method`: its topology is `cache.work.topo`."""
+tt_cache(mesh, method=TT_TC; h=TT_H, grid=tt_grid(mesh, h)) =
+    update_cache!(allocate_cache(grid, method), mesh, grid)
+
+tt_topo(mesh, method=TT_TC; kwargs...) = tt_cache(mesh, method; kwargs...).work.topo
 
 tt_patch(topo, name) = findfirst(==(name), topo.patch_name)
 tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
@@ -28,7 +42,8 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
     box, Vbox, box_areas = tm_box(SVector(0.1, -0.2, 0.3), SVector(1.4, 0.9, 1.0); n=3)
 
     @testset "a valid box" begin
-        topo = build_topology(box, TT_TC, TT_H)
+        cache = tt_cache(box)
+        topo = cache.work.topo
         @test topo isa TriTopology
         @test npatches(topo) == 6
         @test topo.ntri == 6 * 2 * 9
@@ -52,9 +67,8 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
                 @test topo.side_label[t][s] == PAIR_CONVEX && topo.side_patch[t][s] == topo.tri_patch[u]
             end
         end
-        # The global planes: each face's outward normal and offset.
-        X = _mesh_coords(box)
-        planes = _patch_planes(topo, X, _mesh_tris(box))
+        # The global planes the update fitted: each face's outward normal and offset.
+        planes = cache.work.dev.patch_plane
         p = planes[tt_patch(topo, "+y")]
         @test SVector(p[1], p[2], p[3]) ≈ SVector(0.0, 1.0, 0.0)
         @test p[4] ≈ 0.9
@@ -67,7 +81,7 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
             SMatrix{3,3,Float64}(1, 0, 0, 0, cosd(17), sind(17), 0, -sind(17), cosd(17))
         rbox, V, _ = tm_box(SVector(-0.5, -0.4, -0.3), SVector(0.5, 0.4, 0.3); n=2, R=R,
                             t=SVector(0.2, 0.1, -0.05))
-        topo = build_topology(rbox, TT_TC, TT_H)
+        topo = tt_topo(rbox)
         @test topo.volume ≈ V rtol = 1e-14
         @test all(topo.patch_planar)
         @test tt_pair(topo, "+x", "+z") == PAIR_CONVEX
@@ -75,7 +89,7 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
 
     @testset "the prism hull" begin
         hull, V, _ = tm_prism(L=2.0, beam=1.0, deadrise=20.0, depth=0.8, nx=5)
-        topo = build_topology(hull, TT_TC, TT_H)
+        topo = tt_topo(hull)
         @test npatches(topo) == 7
         @test topo.volume ≈ V rtol = 1e-14
         @test all(topo.patch_planar)
@@ -88,7 +102,7 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
 
     @testset "the L-block's concave corner" begin
         lb, V = tm_lblock(a=0.5, hz=0.7)
-        topo = build_topology(lb, TT_TC, TT_H)
+        topo = tt_topo(lb)
         @test topo.volume ≈ V rtol = 1e-14
         @test tt_pair(topo, "y=a", "x=a") == PAIR_CONCAVE
         @test tt_pair(topo, "y=0", "x=2a") == PAIR_CONVEX
@@ -99,18 +113,18 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
     @testset "a smooth seam" begin
         sph, V, A = tm_icosphere(r=0.9, level=3, split=true)
         # At the default 1°, the faceting of a coarse sphere reads as convex creases...
-        topo = build_topology(sph, TT_TC, TT_H)
+        topo = tt_topo(sph)
         @test npatches(topo) == 2
         @test tt_pair(topo, "north", "south") == PAIR_CONVEX
         @test !any(topo.patch_planar)
         # ...and above the facet angle as one surface split in two.
-        topo15 = build_topology(sph, TriClippingCutCell(tangent_angle=15), TT_H)
+        topo15 = tt_topo(sph, TriClippingCutCell(tangent_angle=15))
         @test tt_pair(topo15, "north", "south") == PAIR_TANGENT
         # The faceted sphere is inside the true one, a little short of its volume and area.
         @test 0.97 * V < topo.volume < V
         @test 0.97 * A < sum(topo.patch_area) < A
         # One patch covering the whole sphere has no plane to be near.
-        one = build_topology(tm_icosphere(r=0.9, level=2)[1], TT_TC, TT_H)
+        one = tt_topo(tm_icosphere(r=0.9, level=2)[1])
         @test npatches(one) == 1 && isinf(one.patch_planarity[1])
     end
 
@@ -123,7 +137,7 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
             append!(get!(merged, s.name, Int[]), s.elems)
         end
         hull2 = tm_retri(hull, tm_tris(hull); sets=[MeshElementSet(k, v) for (k, v) in merged])
-        topo = build_topology(hull2, TT_TC, TT_H)
+        topo = tt_topo(hull2)
         @test npatches(topo) == 7
         @test count(==("side+"), topo.patch_name) == 2
         @test length(unique(topo.patch_set)) == 6
@@ -131,17 +145,18 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
 
     @testset "forced planar" begin
         sph, _, _ = tm_icosphere(level=2, split=true)
-        topo = build_topology(sph, TriClippingCutCell(planar_patches=["north"]), TT_H)
+        topo = tt_topo(sph, TriClippingCutCell(planar_patches=["north"]))
         @test topo.patch_planar[tt_patch(topo, "north")]
         @test !topo.patch_planar[tt_patch(topo, "south")]
-        @test_logs (:warn, r"not an element set") match_mode = :any build_topology(
-            sph, TriClippingCutCell(planar_patches=["nope"]), TT_H)
+        @test_logs (:warn, r"not an element set") match_mode = :any tt_topo(
+            sph, TriClippingCutCell(planar_patches=["nope"]))
     end
 
     @testset "malformed input is refused" begin
         tris = tm_tris(box)
+        grid = tt_grid(box, TT_H)
         err(mesh) = try
-            build_topology(mesh, TT_TC, TT_H)
+            tt_cache(mesh; grid=grid)
             ""
         catch e
             e isa ArgumentError ? e.msg : rethrow()
@@ -174,13 +189,17 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
         # Not a triangle mesh.
         quads = Mesh([Point(SVector(0.0, 0.0)), Point(SVector(1.0, 0.0)), Point(SVector(1.0, 1.0))],
                      [Tri(SVector{3,Int32}(1, 2, 3))])
-        @test_throws ArgumentError build_topology(quads, TT_TC, TT_H)
+        @test_throws ArgumentError tt_cache(quads; grid=grid)
+        # A refused mesh is not remembered: the cache takes a valid one straight after.
+        cache = allocate_cache(grid, TT_TC)
+        @test_throws ArgumentError update_cache!(cache, tm_retri(box, inward), grid)
+        @test npatches(update_cache!(cache, box, grid).work.topo) == 6
     end
 
     @testset "no element sets: one patch, with a warning" begin
         bare = Mesh(collect(box.nodes), collect(box.elements))
         # Warned twice: no sets, and the box's 90° edges now fall inside the one patch.
-        topo = @test_logs (:warn, r"no element sets") (:warn, r"bends by 90") build_topology(bare, TT_TC, TT_H)
+        topo = @test_logs (:warn, r"no element sets") (:warn, r"bends by 90") tt_topo(bare)
         @test npatches(topo) == 1 && topo.patch_name == ["body"]
         @test !topo.patch_planar[1]
     end
@@ -191,7 +210,8 @@ tt_pair(topo, a, b) = topo.pair_mask[tt_patch(topo, a), tt_patch(topo, b)]
             @info "gpph_clean.inp not generated (examples/geometry/run_generate_mesh.jl): skipped"
         else
             # (Its patch-check warnings, if any, are captured rather than required.)
-            topo = @test_logs match_mode = :any build_topology(hull, TT_TC, 0.02)
+            gh = CartesianGrid(SVector(-0.4, -1.5, -0.3), (172, 60, 40), SVector(0.05, 0.05, 0.05))
+            topo = (@test_logs match_mode = :any tt_cache(hull; grid=gh)).work.topo
             @test npatches(topo) == 8
             # The transom and the deck are the planar CAD surfaces.
             @test sort(topo.patch_name[topo.patch_planar]) == ["surface_4", "surface_7"]

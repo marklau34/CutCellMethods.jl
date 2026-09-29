@@ -27,11 +27,12 @@ function ts_point_segment(p, a, b)
     return norm(p - (a + t * ab))
 end
 
-# The mesh's feature edges: every edge between two patches.
-function ts_feature_edges(mesh)
-    topo = CutCellMethods.build_topology(mesh, TS, 1.0)
-    X = CutCellMethods._mesh_coords(mesh)
-    tris = CutCellMethods._mesh_tris(mesh)
+# The mesh's feature edges: every edge between two patches, as the topology of `cache`, updated
+# from `mesh`, labels them.
+function ts_feature_edges(mesh, cache)
+    topo = cache.work.topo
+    X = tm_coords(mesh)
+    tris = tm_tris(mesh)
     segs = Tuple{SVector{3,Float64},SVector{3,Float64}}[]
     for t in eachindex(tris), s in 1:3
         topo.side_label[t][s] == 0x00 && continue
@@ -74,8 +75,13 @@ end
         # The same interface the boundary faces report.
         bf_area = sum(ci -> sum(f -> f.area, boundary_faces(cache, ci); init=0.0), CartesianIndices(Tuple(g.n)))
         @test sum(c -> ts_tri_area(X, c), tris) ≈ bf_area rtol = 1e-13
-        # `generate_mesh` cuts and reads it off in one call.
-        @test length(generate_mesh(box, g, TS).elements) == length(tris)
+        # `generate_mesh` reads the same surface off the cache.
+        m = generate_mesh(cache, g)
+        @test m isa Mesh{3}
+        @test all(e -> e isa Tri, m.elements)
+        @test [e.con for e in m.elements] == tris
+        @test [p.coord for p in m.nodes] == X
+        @test [(s.name, s.elems) for s in m.elemset] == [(s.name, s.elems) for s in surf.elemset]
     end
 
     @testset "concave and mixed creases draw too" begin
@@ -97,16 +103,15 @@ end
             cache = update_cache!(allocate_cache(g, TS), body, g)
             creases = interface_creases(cache, g)
             @test length(creases) > 50
-            @test ts_corner_line_error(creases, ts_feature_edges(body)) < 1e-12
+            @test ts_corner_line_error(creases, ts_feature_edges(body, cache)) < 1e-12
         end
         # A planar transom meeting a curved bottom: the crease is a curve, reconstructed in each
         # cell as the transom's plane meeting the bottom's fit -- within O(h^2) of it.
         hull, _ = tm_curved_hull(t=SVector(-0.7, 0.013, -0.3), ny=64)
-        features = ts_feature_edges(hull)
         errs = map((16, 32)) do n
             gg = CartesianGrid(SVector(-1.0, -1.0, -1.0), (n, n, n), SVector(2 / n, 2 / n, 2 / n))
             cache = update_cache!(allocate_cache(gg, TS), hull, gg)
-            ts_corner_line_error(interface_creases(cache, gg), features)
+            ts_corner_line_error(interface_creases(cache, gg), ts_feature_edges(hull, cache))
         end
         @test errs[1] < 0.05 * 0.125
         @test errs[1] / errs[2] > 3

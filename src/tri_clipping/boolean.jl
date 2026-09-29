@@ -12,10 +12,9 @@
 #  * groups with no patch edge between them (a feature thinner than the cell) are unsupported, and
 #    the box is cut by one fallback plane and flagged.
 #
-# The brief's rule refused any two patches that do not share an edge. The chain rule accepts them
-# when the box's other patches connect them: a narrow chine flat between the bottom and the side
-# puts all three in one cell, with the bottom and the side never touching, and that corner is
-# exactly what the method exists to get right.
+# The chain rule accepts two patches with no shared edge when the box's other patches connect them:
+# a narrow chine flat between the bottom and the side puts all three in one cell, with the bottom
+# and the side never touching, and that corner is exactly what the method exists to get right.
 
 """
     _chain_rule(scr, s, pa, m, ca, cb, ng, np_total) -> (rule, flags)
@@ -55,7 +54,7 @@ function _chain_rule(scr, s, pa, m, ca::Int, cb::Int, ng::Int, np_total::Int)
         frontier |= new
     end
     all_groups = ng == 8 ? 0xff : (UInt8(1) << ng) - 0x01
-    # Not connected: a feature thinner than the box, left to the fallback for now (D3).
+    # Not connected: a feature thinner than the box, left to the fallback.
     reached == all_groups || return RULE_FALLBACK, FLAG_UNSUPPORTED
     # Connected with both senses: the planes' arrangement, labelled from the mesh (`mixed.jl`).
     (conv && conc) && return RULE_MIXED, 0x00

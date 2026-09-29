@@ -196,8 +196,8 @@ domain_area(g) = prod(g.n .* g.d)
         cache = cut([pts])
         @test isempty(cut_invariants(cache, PX_G))
         X = pts
-        vcell = Set(CartesianIndex(CutCellMethods._locate(CutCellMethods.PolylineLattice(PX_G).xs, p[1]),
-                                   CutCellMethods._locate(CutCellMethods.PolylineLattice(PX_G).ys, p[2])) for p in X)
+        vcell = Set(CartesianIndex(CutCellMethods._locate(cache.work.lattice.xs, p[1]),
+                                   CutCellMethods._locate(cache.work.lattice.ys, p[2])) for p in X)
         # Spanned: both long sides (elements 1 and 3) cross the cell and no corner of the plate is in
         # it. (A cell only one side clips a corner of is cut but has one region.)
         crosses_both(ci) = issubset((1, 3), Set(s.elem for s in boundary_segments(cache, ci)))
@@ -233,7 +233,7 @@ domain_area(g) = prod(g.n .* g.d)
         foil = naca4_pts(; m=0.0, t=0.12, n=100, chord=1.4, le=(-0.7, 0.013), α=0.0)
         cache = cut([foil])
         @test isempty(cut_invariants(cache, PX_G))
-        L = CutCellMethods.PolylineLattice(PX_G)
+        L = cache.work.lattice
         te = foil[1]
         tip = CartesianIndex(CutCellMethods._locate(L.xs, te[1]), CutCellMethods._locate(L.ys, te[2]))
         @test cache.info.status[tip] == PL_CUT && cache.info.nregion[tip] == 1

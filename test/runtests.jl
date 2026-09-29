@@ -13,8 +13,8 @@ HAS_GPU || @warn "no CUDA device: the device halves of the moment tests are skip
 
 @testset verbose = true "CutCellMethods.jl" begin
     # Cheap, and it guards a class of mistake the rest of the suite only catches by luck.
-    # `cut_cell_moments` carries three method-tagged families alongside the untagged ones, and two
-    # overloads differing only in an untyped argument are an ambiguity raised at the CALL -- on
+    # `cell_values` and `update_cache!` mix typed methods with ones taking an untyped field, and
+    # two overloads differing only in an untyped argument are an ambiguity raised at the CALL -- on
     # whichever path happens to reach it first -- rather than at the definition.
     @testset "no method ambiguities" begin
         @test isempty(Test.detect_ambiguities(CutCellMethods))

@@ -46,7 +46,7 @@ Read one cell's through [`region`](@ref), [`regions`](@ref), [`arcs`](@ref) and
 body is the same mesh with moved nodes, or the same body under a moved grid; either way the
 topology is not rebuilt while the connectivity does not change.
 """
-struct PolylineClippingCutCellCache{T,C,I,E,R,Q,A,B,W} <: AbstractCutCellCache
+struct PolylineClippingCutCellCache{T,C<:AbstractArray{<:CutCellData},I,E,R,Q,A,B,W} <: AbstractCutCellCache
     method::PolylineClippingCutCell
     tols::PolylineTols{T}
     grid::CartesianGrid{2,T}
@@ -70,13 +70,13 @@ Base.eltype(::PolylineClippingCutCellCache{T}) where {T} = T
 
 What adapting a [`PolylineClippingCutCellCache`](@ref) gives: its per-cell results, `cells` and
 `info`, moved by the adaptor, and none of what an update runs on (the topology, the host's crossing
-record, the walk's buffers). It answers the uniform readers (`face_fractions`, `volume_fractions`,
+record, the walk's buffers). Answers the uniform readers (`face_fractions`, `volume_fractions`,
 `kinds`) as the cache does.
 
-The adaptor a GPU kernel launch applies to its arguments reaches a cache through here, so a cache
-can be passed to a kernel directly or inside a consumer's own struct: the kernel gets the view,
-which is isbits on the device, where the cache is not. `Adapt.adapt(Array, cache)` is a host copy of
-the results. A view cannot be updated; to run on another backend, allocate the cache there.
+Lets a cache pass through a kernel launch's adaptor, directly or nested in a consumer's own struct:
+the kernel gets the view, which is isbits on the device where the cache is not.
+`Adapt.adapt(Array, cache)` gives a host copy of the results. A view cannot be updated; to run on
+another backend, allocate the cache there.
 """
 struct PolylineClippingCutCellView{C,I} <: AbstractCutCellCache
     cells::C
@@ -159,9 +159,9 @@ function update_cache!(cache::PolylineClippingCutCellCache{T}, mesh::Mesh,
         "allocated for: only a grid's origin may move between updates"))
     w = cache.work
     backend = get_backend(cache)
-    # What has to be reset: the cells the body covered last time -- or, when the grid moved, all of
-    # them, since an untouched cell's centroids are global coordinates of the old grid. Recorded
-    # only once the reset has run, so an update that throws part-way leaves this right.
+    # What has to be reset: the cells the body covered last time -- or all of them if the grid moved,
+    # since an untouched cell's centroids are global coordinates of the old grid. Recorded only once
+    # the reset has run, so an update that throws part-way leaves this right.
     prev = g.x0 == w.x0 ? w.block : _pl_full_block(g)
 
     if length(mesh.elements) == 0

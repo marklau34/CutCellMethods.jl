@@ -27,9 +27,9 @@ cache = allocate_cache(grid, TriClippingCutCell())
 display(CutCellMethods.cut_report(cache))
 
 # VTK: the cells (volume fraction, kind, rule, flags, face fractions, ...) and the reconstructed
-# interface, each triangle tagged with its patch and cell.
 outdir = joinpath(@__DIR__, "outputs")
 mkpath(outdir)
+clipped_surface = generate_mesh(cache, grid)
 files = CutCellMethods.write_cache_vtk(joinpath(outdir, "seaplane"), cache, grid)
 println("wrote ", join(files, ", "))
 
@@ -37,17 +37,22 @@ println("wrote ", join(files, ", "))
 # Marching cubes surface on the same grid, for comparison
 
 # Marching cubes contours the fuselage's signed distance, which SDFLibrary's `SDFMesh` evaluates
-# from the mesh, sampled at the grid nodes. Its surface is watertight, where the tri clipping one
-# above is per-cell facets, but it cuts the corners off every crease.
+# from the mesh, sampled at the grid nodes by the cache's update. Its surface, marched from those
+# samples, is watertight, where the tri clipping one above is per-cell facets, but it cuts the
+# corners off every crease.
 geo = SDFMesh(mesh)
-@time mc_surface = generate_mesh(geo, grid, MarchingCubesCutCell())
+mc = allocate_cache(grid, MarchingCubesCutCell())
+@time update_cache!(mc, geo, grid)
+@time mc_surface = generate_mesh(mc, grid)
 MeshLibrary.write_vtk(mc_surface, joinpath(outdir, "seaplane_mc_surface"))
 
 # ==================================================================================
 # PLIC surface on the same grid, for comparison
 
-# PLIC fits a plane in each cell to the same signed distance at the cell's centre. Like tri
-# clipping, its surface is per-cell facets, but it has one plane per cell, so it cannot hold a
-# crease inside a cell.
-@time plic_surface = generate_mesh(geo, grid, PLICCutCell())
+# PLIC fits a plane in each cell to the same signed distance at the cell's centre, and its surface is
+# those fits, clipped. Like tri clipping, its surface is per-cell facets, but it has one plane per
+# cell, so it cannot hold a crease inside a cell.
+plic = allocate_cache(grid, PLICCutCell())
+@time update_cache!(plic, geo, grid)
+@time plic_surface = generate_mesh(plic, grid)
 MeshLibrary.write_vtk(plic_surface, joinpath(outdir, "seaplane_plic_surface"))

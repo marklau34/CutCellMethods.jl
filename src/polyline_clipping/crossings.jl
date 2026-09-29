@@ -262,10 +262,10 @@ end
     _pl_classify!(C, b)
 
 The node states, from walking every line of the block through its crossings, and the cell states
-and cut list from them. The x-line walks give the states; the y-line walks must agree node for
-node, and every walk must alternate entering and leaving and end in fluid. A failure of either
-flags the cells around it with `PL_FLAG_STATUS_CONFLICT` and counts in `C.nconflict` -- neither
-should ever happen with the exact predicates, so it is a check rather than a mechanism.
+and cut list from them. The x-line walks give the states; the y-line walks must agree node for node,
+and every walk must alternate entering and leaving and end in fluid. A failure of either flags the
+cells around it with `PL_FLAG_STATUS_CONFLICT` and counts in `C.nconflict` -- a check that should
+never trigger with the exact predicates.
 """
 function _pl_classify!(C::PolylineCrossings, b::PolylineBlock)
     d = _pl_dims(b)
@@ -365,10 +365,9 @@ end
     _pl_cut_lists!(C, X, lines, topo, L, b)
 
 What the walk needs laid out before it runs, per cut slot: where its boundary segments, regions and
-arcs go -- all counted exactly from the crossings and the vertex bins, so the kernel writes straight
-into its slots -- and the islands it holds, each with the region it must be subtracted from found
-here, exactly. Also the finalize list, and the overflow flag of a cell with more crossings than a
-walk tracks.
+arcs go -- counted exactly from the crossings and the vertex bins, so the kernel writes straight into
+its slots -- and the islands it holds, each with the region it is subtracted from found exactly here.
+Also the finalize list, and the overflow flag of a cell with more crossings than a walk tracks.
 """
 function _pl_cut_lists!(C::PolylineCrossings, X, lines, topo::PolylineTopology, L::PolylineLattice,
                         b::PolylineBlock)

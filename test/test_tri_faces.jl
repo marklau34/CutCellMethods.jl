@@ -15,10 +15,11 @@
 
 using CutCellMethods: CELL_CUT, FLAG_UNSUPPORTED, FLAG_STATUS_CONFLICT, FLAG_CLOSURE_FALLBACK,
                       FLAG_CORR_LARGE, closure_residual, interface_normal_area, boundary_faces,
-                      cut_report, TriScratch, poly_box!, poly_clip!, poly_volume_moment
+                      cut_report, TriScratch
+using Random
+using KernelAbstractions
 
 isdefined(@__MODULE__, :tm_box) || include("tri_meshes.jl")
-isdefined(@__MODULE__, :tcut_box_planes) || include("test_tri_cut.jl")
 isdefined(@__MODULE__, :shared_face_mismatches) || function shared_face_mismatches(ff::AbstractArray{<:Any,D}) where {D}
     bad = 0
     for c in 1:D
@@ -119,7 +120,7 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
         kw = (L=1.4, beam=0.9, deadrise=20.0, depth=0.6)
         t0 = SVector(-0.7, 0.013, -0.3)
         hull, _, _ = tm_prism(; kw..., nx=5, t=t0)
-        planes0 = tcut_prism_planes(; kw..., t=t0)
+        planes0 = tm_prism_planes(; kw..., t=t0)
         X0 = copy(hull.nodes.coord)
         centre = SVector(0.0, 0.013, 0.0)
         cache = allocate_cache(g, TF)
@@ -136,7 +137,7 @@ tf_clean(a; correction=Inf) = a.fraction_mismatch == 0 && a.centroid_mismatch ==
             planes = [(R * n, d - dot(n, centre) + dot(R * n, centre + s)) for (n, d) in planes0]
             for ci in idx
                 cache.cells.kind[ci] == CELL_CUT || continue
-                worst_vf = max(worst_vf, abs(cache.cells.volume_fraction[ci] - (1 - tcut_solid_fraction(scr, g, ci, planes))))
+                worst_vf = max(worst_vf, abs(cache.cells.volume_fraction[ci] - (1 - tm_solid_fraction(scr, g, ci, planes))))
             end
             a = tf_audit(cache, g)
             bad += !(tf_clean(a; correction=1e-12) && count(f -> f & FLAG_UNSUPPORTED != 0, cache.info.flags) == 0)

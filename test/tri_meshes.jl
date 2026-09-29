@@ -300,6 +300,119 @@ function tm_lblock(; a::Float64=1.0, hz::Float64=1.0, t=zero(SVector{3,Float64})
 end
 
 """
+    tm_frame(n) -> SMatrix{3,3}
+
+A rotation taking `+x` to the unit vector `n`: its columns are `n` and two unit vectors completing
+a right-handed frame.
+"""
+function tm_frame(n::SVector{3,Float64})
+    u = normalize(cross(n, abs(n[1]) < 0.9 ? SVector(1.0, 0.0, 0.0) : SVector(0.0, 1.0, 0.0)))
+    return SMatrix{3,3,Float64}(hcat(n, u, cross(n, u)))
+end
+
+"""
+    tm_pyramid(; apex, axis, k, height, radius, θ0=0) -> (mesh, planes, volume)
+
+A right pyramid over a regular `k`-gon: its apex at `apex`, its base `height` back along `axis` and
+of circumradius `radius`, first corner at angle `θ0`. `k` planar side patches `side1`...`sidek` meet
+at the apex -- `k` convex creases in the one cell holding it -- and a `base` patch closes it. Each
+side is two triangles, split at its base edge's midpoint. `planes` are the `k + 1` outward
+`(n, d)`, solid where `n . x <= d`, sides first.
+"""
+function tm_pyramid(; apex::SVector{3,Float64}, axis::SVector{3,Float64}, k::Int, height::Float64,
+                    radius::Float64, θ0::Float64=0.0)
+    R = tm_frame(normalize(axis))
+    ax, u, v = R[:, 1], R[:, 2], R[:, 3]
+    c = apex - height * ax
+    B = [c + radius * (cos(θ0 + 2π * i / k) * u + sin(θ0 + 2π * i / k) * v) for i in 0:(k - 1)]
+    # Nodes: the apex, the base centre, then each base corner followed by its edge's midpoint.
+    X = SVector{3,Float64}[apex, c]
+    for i in 1:k
+        push!(X, B[i], (B[i] + B[i % k + 1]) / 2)
+    end
+    corner(i) = Int32(1 + 2i)
+    edge_mid(i) = Int32(2 + 2i)
+    centroid = (apex + 3c) / 4
+    tris = SVector{3,Int32}[]
+    sets = Pair{String,Vector{Int}}[]
+    planes = Tuple{SVector{3,Float64},Float64}[]
+    for i in 1:k
+        j = i % k + 1
+        mine = Int[]
+        for tri in (SVector{3,Int32}(1, corner(i), edge_mid(i)), SVector{3,Int32}(1, edge_mid(i), corner(j)))
+            push!(tris, tm_orient(X, tri, (apex + B[i] + B[j]) / 3 - centroid))
+            push!(mine, length(tris))
+        end
+        push!(sets, "side$i" => mine)
+        n = normalize(cross(B[i] - apex, B[j] - apex))
+        dot(n, centroid - apex) > 0 && (n = -n)
+        push!(planes, (n, dot(n, apex)))
+    end
+    base = Int[]
+    for i in 1:k
+        for tri in (SVector{3,Int32}(2, corner(i), edge_mid(i)), SVector{3,Int32}(2, edge_mid(i), corner(i % k + 1)))
+            push!(tris, tm_orient(X, tri, -ax))
+            push!(base, length(tris))
+        end
+    end
+    push!(sets, "base" => base)
+    push!(planes, (-ax, dot(-ax, c)))
+    return tm_mesh(X, tris, sets), planes, k / 2 * radius^2 * sin(2π / k) * height / 3
+end
+
+# =====================================
+# Exact references
+#
+# A convex body as its outward planes `(n, d)`, solid where `n . x <= d`, and the solid fraction of
+# a cell cut by them -- clipped with the body's own analytic planes, not the method's fitted ones.
+
+"""The solid fraction of cell `ci` of `g` inside every `(n, d)` of `planes`, on the clipper's
+scratch `scr`: the cell box clipped by each plane in turn."""
+function tm_solid_fraction(scr, g, ci, planes)
+    o = get_node(g, ci)
+    U = get_node(g, ci + CartesianIndex(1, 1, 1)) - o
+    CutCellMethods.poly_box!(scr, 1, U)
+    for (n, d) in planes
+        CutCellMethods.poly_clip!(scr, 1, n, d - dot(n, o), 7, 1e-12, false)
+    end
+    return first(CutCellMethods.poly_volume_moment(scr, 1, U / 2)) / prod(U)
+end
+
+"""The box `lo..hi` of `tm_box`, rotated by `R` and moved by `t`, as its six outward planes in its
+element-set order (`-x`, `+x`, `-y`, ...)."""
+function tm_box_planes(lo, hi, R=SMatrix{3,3,Float64}(I), t=zero(SVector{3,Float64}))
+    P = Tuple{SVector{3,Float64},Float64}[]
+    for ax in 1:3, sgn in (-1, 1)
+        n = R * SVector(ntuple(a -> a == ax ? Float64(sgn) : 0.0, 3))
+        push!(P, (n, dot(n, R * (sgn > 0 ? hi : lo) + t)))
+    end
+    return P
+end
+
+"""The prism hull of `tm_prism` as its seven outward planes."""
+function tm_prism_planes(; L, beam, deadrise, depth, t)
+    b = beam / 2
+    zc = b * tand(deadrise)
+    sec = (SVector(0.0, 0.0), SVector(b, zc), SVector(b, depth), SVector(-b, depth), SVector(-b, zc))
+    return tm_yz_prism(sec, L, t)
+end
+
+"""A convex prism along x over `[t[1], t[1] + L]` whose section is `sec`, (y, z) corners
+counter-clockwise seen from +x, offset by `t`, as its outward planes."""
+function tm_yz_prism(sec, L, t)
+    P = Tuple{SVector{3,Float64},Float64}[]
+    for k in eachindex(sec)
+        p, q = sec[k], sec[k % length(sec) + 1]
+        e = q - p
+        n = normalize(SVector(0.0, e[2], -e[1]))
+        push!(P, (n, dot(n, SVector(0.0, p[1], p[2]) + t)))
+    end
+    push!(P, (SVector(-1.0, 0.0, 0.0), -t[1]))
+    push!(P, (SVector(1.0, 0.0, 0.0), t[1] + L))
+    return P
+end
+
+"""
     tm_gpph() -> Mesh or nothing
 
 The GPPH planing hull, cleaned of its transom fillets, as `examples/geometry/run_generate_mesh.jl`
@@ -319,3 +432,4 @@ function tm_retri(mesh, tris::Vector{SVector{3,Int32}}; sets=mesh.elemset)
     return Mesh(collect(mesh.nodes), [Tri(c) for c in tris]; element_sets=sets)
 end
 tm_tris(mesh) = SVector{3,Int32}[SVector{3,Int32}(e.con) for e in mesh.elements]
+tm_coords(mesh) = SVector{3,Float64}[SVector{3,Float64}(c) for c in mesh.nodes.coord]

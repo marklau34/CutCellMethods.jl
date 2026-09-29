@@ -145,17 +145,14 @@ function _pl_wall_ends(g::CartesianGrid{2}, ci::CartesianIndex{2}, dir::Int, s0,
 end
 
 """
-    generate_mesh(mesh, grid, ::PolylineClippingCutCell) -> Mesh{2}
+    generate_mesh(cache, grid) -> Mesh{2}
 
-The walls `PolylineClippingCutCell` cuts from `mesh` over `grid`, as a `Mesh{2}` of `Line` with one
-element set per polyline (see [`interface_mesh`](@ref), which reads them off an updated cache
-without cutting again). For an exact polygon these are its own edges, split at the grid lines.
+The walls `cache`'s last update cut, as a `Mesh{2}` of `Line` with one element set per polyline:
+[`interface_mesh`](@ref)'s mesh, without each line's cell and region. For an exact polygon these
+are its own edges, split at the grid lines. `grid` is the grid of that update.
 """
-function MeshLibrary.generate_mesh(mesh::Mesh, grid::CartesianGrid{2,T},
-                                   method::PolylineClippingCutCell) where {T}
-    cache = update_cache!(allocate_cache(grid, method), mesh, grid)
-    return first(interface_mesh(cache, grid))
-end
+MeshLibrary.generate_mesh(cache::PolylineClippingCutCellCache, grid::CartesianGrid{2}) =
+    first(interface_mesh(cache, grid))
 
 # A simple polygon, counter-clockwise, as triangles by ear clipping: for drawing only. Repeated and
 # collinear points are dropped; a polygon too degenerate to clip is fanned from what is left.

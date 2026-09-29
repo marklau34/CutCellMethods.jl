@@ -56,8 +56,6 @@ function _pl_fingerprint(mesh::Mesh)
     return h
 end
 
-_pl_coords(mesh::Mesh{2}) = SVector{2,Float64}[SVector{2,Float64}(c) for c in mesh.nodes.coord]
-
 function _pl_lines(mesh::Mesh{2})
     eltype(mesh.elements) <: Line || throw(ArgumentError(
         "PolylineClippingCutCell needs a mesh of `Line` elements, got $(eltype(mesh.elements))"))
@@ -72,7 +70,7 @@ _pl_lines(::Mesh{D}) where {D} = throw(ArgumentError(
 Find `mesh`'s loops and check its connectivity: every element joins two distinct nodes, and every
 node that is used starts exactly one element and ends exactly one. Throws an `ArgumentError` naming
 the first node or element that breaks this -- a polyline that is open, branches, or has an element
-running the wrong way. The geometric checks are [`validate_polyline_geometry`](@ref).
+running the wrong way. The geometric checks are the `_pl_check_*` functions below.
 """
 function build_polyline_topology(mesh::Mesh)
     lines = _pl_lines(mesh)
@@ -137,37 +135,27 @@ function build_polyline_topology(mesh::Mesh)
                         loop_first, loop_nelem, loop_name)
 end
 
-"""
-    validate_polyline_geometry(topo, X, lines) -> Vector{Float64}
-
-The geometric half of the mesh checks, against the coordinates `X` as they are now. Returns each
-loop's area, and throws an `ArgumentError` naming the loop and element if:
-
-- an element has zero length (its two nodes coincide);
-- a loop is wound clockwise, or encloses no area -- the solid must be on the left of every element;
-- two elements cross or touch anywhere but at the node two neighbours share, or two neighbours fold
-  back along each other;
-- a loop lies inside another.
-
-Every test is exact, so a mesh that passes has no near-miss the cut could misread.
-
-The first two are linear and as cheap as reading the coordinates, so an update runs them every
-time ([`_pl_check_loops`](@ref)); the intersection and nesting checks run when the connectivity
-changes, or every time under `validate = :always`.
-"""
-function validate_polyline_geometry(topo::PolylineTopology, X::AbstractVector{SVector{2,Float64}},
-                                    lines::AbstractVector{SVector{2,Int32}})
-    area = _pl_check_loops(topo, X, lines)
-    _pl_check_intersections(topo, X, lines)
-    _pl_check_nesting(topo, X, lines)
-    return area
-end
+# =====================================
+# The geometric half of the mesh checks, against the coordinates as they are now
+#
+# An update throws an `ArgumentError` naming the loop and element if:
+#
+# - an element has zero length (its two nodes coincide);
+# - a loop is wound clockwise, or encloses no area -- the solid must be on the left of every element;
+# - two elements cross or touch anywhere but at the node two neighbours share, or two neighbours
+#   fold back along each other;
+# - a loop lies inside another.
+#
+# Every test is exact, so a mesh that passes has no near-miss the cut could misread. The first two
+# are linear and as cheap as reading the coordinates, so an update runs them every time
+# (`_pl_check_loops`); the intersection and nesting checks (`_pl_check_intersections`,
+# `_pl_check_nesting`) run when the connectivity changes, or every time under `validate = :always`.
 
 """
     _pl_check_loops(topo, X, lines) -> Vector{Float64}
 
-The linear half of [`validate_polyline_geometry`](@ref): no zero-length element, and every loop
-counter-clockwise with positive area. Returns the loop areas.
+The linear half of the geometric checks: no zero-length element, and every loop counter-clockwise
+with positive area. Returns the loop areas.
 """
 function _pl_check_loops(topo::PolylineTopology, X::AbstractVector{SVector{2,Float64}},
                          lines::AbstractVector{SVector{2,Int32}})

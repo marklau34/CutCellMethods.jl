@@ -1,28 +1,20 @@
 # =====================================
 # ConvexPoly: a convex polytope clipped by planes, on a slot's scratch
 #
-# The brief's face-loop representation: vertices, and faces as vertex-index loops wound
-# counter-clockwise seen from outside, each tagged with the Cartesian face it lies in (`1..6`, by
-# direction, `1 = -x`, `2 = +x`, ...) or with the fit group whose plane cut it (above `6`). The tags
-# are what turn a clipped polytope's faces into apertures and interface facets.
+# Vertices, and faces as vertex-index loops wound counter-clockwise seen from outside, each tagged
+# with the Cartesian face it lies in (`1..6`, by direction) or the fit group whose plane cut it
+# (above `6`). Tags turn a clipped polytope's faces into apertures and interface facets.
 #
 # A clip keeps `n . x <= d`:
+#  1. Signed distances, snapped to zero within `tol`.
+#  2. Kept vertices copied to the other buffer; one vertex inserted per edge whose ends are
+#     strictly on opposite sides, shared by both faces on that edge.
+#  3. Each face loop trimmed to its kept part; loops under 3 vertices are dropped.
+#  4. The cap: on-plane edges of kept faces not traversed the other way by another kept face,
+#     reversed and chained into one loop. A chain that doesn't close is `FLAG_CHAIN_FAIL`.
 #
-#  1. Signed distances, snapped to zero within `tol`. With nothing on the discarded side the
-#     polytope is unchanged; with nothing on the kept side it is empty.
-#  2. Kept vertices are copied to the other buffer, which compacts them, and one vertex is inserted
-#     on each edge whose ends are *strictly* on opposite sides -- once, shared by the two faces on
-#     that edge.
-#  3. Every face loop is trimmed to its kept part. A loop left with fewer than three vertices is
-#     dropped; never one merely small in area, which would leave an unmatched edge for the next cap.
-#  4. The cap: the on-plane edges of the kept faces that no other kept face traverses the other
-#     way, reversed and chained into one loop. This replaces the brief's angle sort around the
-#     centroid, which is fragile when snapped on-plane vertices nearly coincide or are collinear. A
-#     chain that does not close into exactly one loop is reported (`FLAG_CHAIN_FAIL`), not patched.
-#
-# Everything runs in a cell's local frame -- the box is `[0, U]` from the cell's lower lattice
-# corner -- so roundoff is relative to the cell size rather than to the body's distance from the
-# origin.
+# Runs in the cell's local frame (box `[0, U]` from its lower lattice corner) so roundoff is
+# relative to cell size.
 
 # The box's faces as corner loops, by direction. Corner `k` sits at bits `k - 1` = (x, y, z).
 const BOX_FACES = ((1, 5, 7, 3), (2, 4, 8, 6), (1, 2, 6, 5), (3, 7, 8, 4), (1, 3, 4, 2), (5, 6, 8, 7))
@@ -333,20 +325,6 @@ function poly_tag_moment(scr, s, tag::Integer)
     return S, A, M
 end
 
-"""
-    poly_area_vector_sum(scr, s) -> SVector{3}
-
-`sum_f A_f` over every face: zero for a closed polytope, to roundoff.
-"""
-function poly_area_vector_sum(scr, s)
-    T = eltype(eltype(scr.x))
-    S = zero(SVector{3,T})
-    for f in 1:poly_nf(scr, s)
-        S += poly_face_area_vector(scr, s, f)
-    end
-    return S
-end
-
 # Whether faces `f` and `g` share an edge: a consistently wound polytope traverses it both ways.
 @inline function _faces_share_edge(scr, s, b, f, g)
     Lf = Int(@inbounds scr.nloop[f, b, s])
@@ -402,38 +380,11 @@ function poly_patch_components(scr, s)
 end
 
 # =====================================
-# Planes and the Boolean rules on a box
+# Planes
 #
 # A plane is `SVector{4,T}(n..., d)`, `n` the unit normal out of the body: the solid half-space is
-# `n . x <= d` and the fluid half-space `n . x >= d`.
+# `n . x <= d` and the fluid half-space `n . x >= d`. The Boolean rules clip a box by them in
+# `cut.jl`.
 
 @inline _pn(p::SVector{4,T}) where {T} = @inbounds SVector{3,T}(p[1], p[2], p[3])
 @inline _pd(p::SVector{4}) = @inbounds p[4]
-
-"""
-    fluid_convex_moments(scr, s, U, planes, k, tol) -> (volume, first_moment, flags)
-
-The fluid part of the box `[0, U]` when the solid is the convex intersection of the first `k`
-planes' solid half-spaces -- a convex crease -- as the disjoint union over `j` of
-`box ∩ S_1 ∩ ... ∩ S_(j-1) ∩ F_j`. Each piece is convex, so the volume and first moment accumulate
-without the cancellation `V_box - V_solid` suffers when the fluid is a sliver.
-"""
-function fluid_convex_moments(scr, s, U::SVector{3,T}, planes, k::Integer, tol::T) where {T}
-    r = U / 2
-    V = zero(T)
-    M = zero(SVector{3,T})
-    status = 0x00
-    for j in 1:k
-        poly_box!(scr, s, U)
-        for i in 1:(j - 1)
-            p = @inbounds planes[i]
-            status |= poly_clip!(scr, s, _pn(p), _pd(p), 7 + i - 1, tol, false)
-        end
-        p = @inbounds planes[j]
-        status |= poly_clip!(scr, s, -_pn(p), -_pd(p), 7 + j - 1, tol, true)
-        v, m = poly_volume_moment(scr, s, r)
-        V += v
-        M += m
-    end
-    return V, M, status
-end

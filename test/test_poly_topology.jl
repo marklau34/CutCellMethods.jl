@@ -1,20 +1,32 @@
 # =====================================
 # Polyline clipping, P1: loops and mesh validation
+#
+# A cache finds its mesh's loops and validates it on the first update, and keeps the loops as
+# `cache.work.topo` and their areas as `cache.work.loop_area`; that is what is read here.
 
 using Test
 using StaticArrays
 using MeshLibrary
 using Random
-using CutCellMethods: PolylineClippingCutCell, PolylineTopology, build_polyline_topology,
-                      validate_polyline_geometry, nloops, _pl_fingerprint, _pl_coords, _pl_lines
+using CutCellMethods: PolylineClippingCutCell, PolylineTopology, nloops
 
 isdefined(@__MODULE__, :PV) || include("polyline_meshes.jl")
 
-# Topology plus the geometric checks, as an update runs them.
-function poly_check(mesh)
-    topo = build_polyline_topology(mesh)
-    return topo, validate_polyline_geometry(topo, _pl_coords(mesh), _pl_lines(mesh))
+"""A grid of square cells round `mesh`, `n` across its longer side and a few cells clear of it."""
+function pt_grid(mesh; n=32)
+    X = mesh.nodes.coord
+    lo = reduce((a, b) -> min.(a, b), X)
+    hi = reduce((a, b) -> max.(a, b), X)
+    h = maximum(hi - lo) / n
+    return CartesianGrid(SVector{2,Float64}(lo .- 3h), Tuple(ceil.(Int, (hi - lo) ./ h) .+ 6), SVector(h, h))
 end
+
+"""A cache over `grid`, updated from `mesh`: the update that validates it."""
+pt_cache(mesh; grid=pt_grid(mesh), method=PolylineClippingCutCell()) =
+    update_cache!(allocate_cache(grid, method), mesh, grid)
+
+"""The loops an update finds in `mesh`, and their areas."""
+poly_check(mesh) = (c = pt_cache(mesh); (c.work.topo, c.work.loop_area))
 
 @testset verbose = true "polyline clipping: topology" begin
     rng = MersenneTwister(7)
@@ -30,6 +42,7 @@ end
 
     @testset "loops and areas" begin
         topo, area = poly_check(poly_mesh(square_pts((0.3, -0.2), 0.7)))
+        @test topo isa PolylineTopology
         @test nloops(topo) == 1 && topo.loop_nelem == [4]
         @test area[1] ≈ 0.49 rtol = 1e-15
         topo, area = poly_check(poly_mesh(square_pts((0.3, -0.2), 0.7; θ=0.3)))
@@ -48,7 +61,7 @@ end
         @test nloops(topo) == 3
         @test topo.loop_name == ["slat", "main", "flap"]
         @test area ≈ pts_area.(loops) rtol = 1e-14
-        lines = _pl_lines(mesh)
+        lines = [e.con for e in mesh.elements]
         @test all(e -> lines[topo.elem_next[e]][1] == lines[e][2], eachindex(lines))
         @test all(e -> topo.elem_next[topo.elem_prev[e]] == e, eachindex(lines))
         @test sum(topo.loop_nelem) == length(lines)
@@ -75,7 +88,7 @@ end
 
     @testset "rejects $(name)" for (name, mesh, msg) in invalid_poly_meshes()
         err = try
-            poly_check(mesh)
+            pt_cache(mesh)
             nothing
         catch e
             e
@@ -91,25 +104,30 @@ end
     end
 
     @testset "rejects non-line meshes" begin
-        @test_throws ArgumentError build_polyline_topology(Mesh(Point{3,Float64}, Tri{Int32}))
-        tri2 = Mesh([Point(PV(0, 0)), Point(PV(1, 0)), Point(PV(0, 1))], [Tri(Int32(1), Int32(2), Int32(3))])
-        @test_throws ArgumentError build_polyline_topology(tri2)
+        g = CartesianGrid(SVector(-1.0, -1.0), (16, 16), SVector(0.25, 0.25))
+        tri3 = Mesh([Point(SVector(0.0, 0.0, 0.0)), Point(SVector(1.0, 0.0, 0.0)), Point(SVector(0.0, 1.0, 0.0))],
+                    [Tri(Int32(1), Int32(2), Int32(3))])
+        @test_throws ArgumentError pt_cache(tri3; grid=g)
+        tri2 = Mesh([Point(PV(0, 0)), Point(PV(0.5, 0)), Point(PV(0, 0.5))], [Tri(Int32(1), Int32(2), Int32(3))])
+        @test_throws ArgumentError pt_cache(tri2; grid=g)
     end
 
     @testset "fingerprint" begin
+        # What decides whether an update rebuilds the loops: the connectivity and the element
+        # sets, not the coordinates.
         loops = three_element_pts()
-        mesh = poly_mesh(loops; names=["slat", "main", "flap"])
-        fp = _pl_fingerprint(mesh)
+        fingerprint(mesh) = pt_cache(mesh).work.topo.fingerprint
+        fp = fingerprint(poly_mesh(loops; names=["slat", "main", "flap"]))
         # Rigid motion moves the nodes and keeps the connectivity: same fingerprint, same topology.
         R, t = _rot(0.37), PV(3.1, -2.4)
         moved = poly_mesh([[R * p + t for p in pts] for pts in loops]; names=["slat", "main", "flap"])
-        @test _pl_fingerprint(moved) == fp
+        @test fingerprint(moved) == fp
         topo, area = poly_check(moved)
         @test area ≈ pts_area.(loops) rtol = 1e-13
         # A change of connectivity or of the sets changes it.
-        @test _pl_fingerprint(poly_mesh(loops; names=["slat", "main", "flap2"])) != fp
-        @test _pl_fingerprint(poly_mesh(loops[1:2]; names=["slat", "main"])) != fp
+        @test fingerprint(poly_mesh(loops; names=["slat", "main", "flap2"])) != fp
+        @test fingerprint(poly_mesh(loops[1:2]; names=["slat", "main"])) != fp
         perm = randperm(rng, sum(length, loops))
-        @test _pl_fingerprint(poly_mesh(loops; names=["slat", "main", "flap"], perm=perm)) != fp
+        @test fingerprint(poly_mesh(loops; names=["slat", "main", "flap"], perm=perm)) != fp
     end
 end

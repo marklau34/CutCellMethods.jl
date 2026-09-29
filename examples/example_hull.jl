@@ -32,7 +32,7 @@ cache = allocate_cache(grid, TriClippingCutCell())
 display(CutCellMethods.cut_report(cache))
 
 # VTK: the cells (volume fraction, kind, rule, flags, face fractions, ...) and the reconstructed
-# interface, each triangle tagged with its patch and cell.
+# interface (`generate_mesh(cache, grid)`), each triangle tagged with its patch.
 outdir = joinpath(@__DIR__, "outputs")
 mkpath(outdir)
 files = CutCellMethods.write_cache_vtk(joinpath(outdir, "hull"), cache, grid)
@@ -61,8 +61,8 @@ end
 
 # VTK: each method's surface, next to hull_surface.vtu, and one cell file holding the three volume
 # fractions and their differences from tri clipping.
-MeshLibrary.write_vtk(generate_mesh(geo, grid, PLICCutCell()), joinpath(outdir, "hull_plic_surface"))
-MeshLibrary.write_vtk(generate_mesh(mc.phi, grid, MarchingCubesCutCell()), joinpath(outdir, "hull_mc_surface"))
+MeshLibrary.write_vtk(generate_mesh(plic, grid), joinpath(outdir, "hull_plic_surface"))
+MeshLibrary.write_vtk(generate_mesh(mc, grid), joinpath(outdir, "hull_mc_surface"))
 vf_tri, vf_plic, vf_mc = CutCellMethods.volume_fractions.((cache, plic, mc))
 CartesianMeshes.write_vtk(joinpath(outdir, "hull_compare"), grid;
                           cell_data=Dict("volume_fraction_tri" => vf_tri,

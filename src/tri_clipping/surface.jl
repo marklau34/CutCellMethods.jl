@@ -8,8 +8,8 @@
 # their own planes, which meet only to the fits' order on a curved patch).
 #
 # The same walk gives the *creases*: the edges where two different patches' facets meet inside a
-# cell. On a planar corner they are the true crease; on a curved one, within `O(h^2)` of it --
-# the brief's corner-line check (`interface_creases`).
+# cell. On a planar corner they are the true crease; on a curved one, within `O(h^2)` of it
+# (`interface_creases`).
 
 # A polygon face `f` of slot 1's polytope, fanned into triangles in global coordinates, appended to
 # `X`/`tris`; `flip` reverses the winding. Returns how many triangles were added.
@@ -201,26 +201,23 @@ interface_creases(cache::TriClippingCutCellCache, grid::CartesianGrid{3}) =
     last(_interface_geometry(cache, grid))
 
 """
-    generate_mesh(mesh, grid, ::TriClippingCutCell) -> Mesh{3}
+    generate_mesh(cache, grid) -> Mesh{3}
 
-The surface `TriClippingCutCell` reconstructs from `mesh` over `grid`: each cut cell's facets,
-one patch plane at a time, as a triangle mesh wound out of the body with one element set per
-patch. Cuts the whole grid to get there; with a cache already updated, [`interface_mesh`](@ref)
-reads it off without cutting again.
+The interface `cache`'s last update cut, as a `Mesh{3}` of `Tri` wound out of the body, with one
+`MeshElementSet` per patch: each cut cell's facets, one patch plane at a time, not stitched across
+cells. Read off the cache, not cut again; on the host. `grid` is the grid of that update.
+[`interface_mesh`](@ref) also gives the cell each triangle came from.
 """
-function MeshLibrary.generate_mesh(mesh::Mesh, grid::CartesianGrid{3,T},
-                                   method::TriClippingCutCell) where {T}
-    cache = update_cache!(allocate_cache(grid, method), mesh, grid)
-    return first(interface_mesh(cache, grid))
-end
+MeshLibrary.generate_mesh(cache::TriClippingCutCellCache, grid::CartesianGrid{3}) =
+    first(interface_mesh(cache, grid))
 
 """
     write_cache_vtk(prefix, cache, grid; surface=true) -> Vector{String}
 
 Write what `cache`'s last update produced for ParaView: `prefix_cells.vti`, the grid with every
 cell's volume fraction, kind, Boolean rule, flags, patch count, closure correction and six face
-fractions; and, with `surface`, `prefix_surface.vtu`, the reconstructed interface with each
-triangle's patch and cell. Returns the files written.
+fractions; and, with `surface`, `prefix_surface.vtu`, the reconstructed interface
+([`generate_mesh`](@ref)`(cache, grid)`) with each triangle's patch. Returns the files written.
 """
 function write_cache_vtk(prefix::AbstractString, cache::TriClippingCutCellCache, grid::CartesianGrid{3};
                          surface::Bool=true)
@@ -241,14 +238,13 @@ function write_cache_vtk(prefix::AbstractString, cache::TriClippingCutCellCache,
     # WriteVTK picks the file type from the grid lines: image data for a uniform grid's ranges.
     push!(files, first(filter(isfile, prefix * "_cells" .* (".vti", ".vtr"))))
     if surface
-        surf, tri_cell = interface_mesh(cache, grid)
+        surf = MeshLibrary.generate_mesh(cache, grid)
+        # VTK has no element sets, so each triangle's set becomes a per-triangle field.
         patch = zeros(Int32, length(surf.elements))
         for (k, set) in enumerate(surf.elemset)
             patch[set.elems] .= k
         end
-        lin = LinearIndices(Tuple(grid.n))
-        cd = Dict("patch" => patch, "cell" => Int64[lin[ci] for ci in tri_cell])
-        MeshLibrary.write_vtk(surf, prefix * "_surface"; cell_data=cd)
+        MeshLibrary.write_vtk(surf, prefix * "_surface"; cell_data=Dict("patch" => patch))
         push!(files, prefix * "_surface.vtu")
     end
     return files

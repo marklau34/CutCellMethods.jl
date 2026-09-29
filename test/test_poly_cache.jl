@@ -154,7 +154,7 @@ mesh_lines(mesh) = [SVector{2,Int32}(e.con) for e in mesh.elements]
         cache = allocate_cache(PCG, PCM)
         @test update_cache!(cache, mesh, PCG) === cache
         X, lines = mesh_X(mesh), mesh_lines(mesh)
-        L = PolylineLattice(PCG)
+        L = cache.work.lattice
         C = cache.work.cross
         b = cache.work.block
         d = _pl_dims(b)

@@ -3,21 +3,19 @@
 #
 # The body is one or more closed polylines -- a `Mesh{2}` of `Line` elements, each loop wound
 # counter-clockwise, so the solid is on the left of every element and MeshLibrary's element normal
-# (to the right) points into the fluid. Every cut quantity is built from the crossings of those
-# elements with the grid lines, and a crossing depends only on the element and the line's value, so
-# the two cells sharing an edge read the same numbers and agree on it bitwise with no consistency
-# pass. In each cut cell the fluid is recovered by walking the cell boundary counter-clockwise and
-# turning back along the polyline wherever the boundary runs into the solid; each closed walk is one
-# fluid *region*. The result is exact for the polygon: sharp corners, trailing edges thinner than a
-# cell, and cells a thin body splits in two are all reproduced rather than smoothed.
+# points into the fluid. Every cut quantity is built from the crossings of those elements with the
+# grid lines, and a crossing depends only on the element and the line's value, so the two cells
+# sharing an edge read the same numbers and agree on it bitwise with no consistency pass. In each cut
+# cell the fluid is recovered by walking the cell boundary counter-clockwise and turning back along
+# the polyline wherever the boundary runs into the solid; each closed walk is one fluid *region*. The
+# result is exact for the polygon: sharp corners, trailing edges thinner than a cell, and cells a
+# thin body splits in two are all reproduced rather than smoothed.
 #
-# The construction is the brief's (`Brief 2D cut cells by exact boundary walking.md`), without its
-# pose (the caller passes the mesh in grid coordinates) and with its closure formula's sign
-# corrected: with boundary normals into the fluid, a region's closure is
-# `sum_e n_e l_e - sum_s n_s L_s = 0`.
+# The mesh is given in the grid's own coordinate frame. With boundary normals into the fluid, a
+# region's closure is `sum_e n_e l_e - sum_s n_s L_s = 0`.
 #
-# Every combinatorial decision -- which lines an element crosses, which edge a crossing lands on,
-# the order of crossings along an edge, which cell a vertex is in -- is made on the host with exact
+# Every combinatorial decision -- which lines an element crosses, which edge a crossing lands on, the
+# order of crossings along an edge, which cell a vertex is in -- is made on the host with exact
 # orientation predicates against one symbolic perturbation of the grid (`predicates.jl`), so the
 # decisions are facts about one arrangement and cannot contradict each other. The kernels only do
 # arithmetic on what the host decided.

@@ -1,368 +1,271 @@
 # =====================================
-# Tri clipping, phase 1: the two clippers on a slot's scratch.
+# Tri clipping, phase 1: the clippers, through the cache.
 #
-# What is asserted:
+# The convex-polytope clipper cuts every cut cell, so it is asserted here on bodies whose cells it
+# cuts against planes known exactly, read off the cache as a consumer reads it:
 #
-#   * the convex-polytope clipper against the brief's cases: an axis-aligned cut exact, a corner
-#     cut through three edge midpoints 1/48 of the cube, a two-plane wedge against its analytic
-#     volume, and planes through a vertex, along an edge and coincident with a face
-#   * 10^4 random single planes against CartesianMeshes' analytic plane-cube volume, on the unit
-#     cube and on a stretched box, with every face's vector area summing to zero
-#   * 10^5 random eight-plane clips: never an overflow or a failed cap, always closed, volume never
-#     growing, and a sample against Monte Carlo
-#   * the convex-crease fluid decomposition against box minus solid
-#   * the planar polygon clipper: triangle against box, face square against planes, closed vs open
-#   * zero allocations and inferred return types, and the same numbers from inside a
-#     KernelAbstractions kernel on the CPU and, where there is one, the GPU
+#   * single planes: a box's faces at random orientations, every cell only one face crosses
+#     against CartesianMeshes' analytic plane-cube volume, on a cubic grid and on a stretched one
+#   * degenerate planes: faces through lattice nodes and through edge midpoints, where the cut runs
+#     through cell vertices and along cell edges, and a corner tetrahedron is exactly 1/48
+#   * many planes in one cell: pyramids of 3 to 8 sides, whose apex cell the convex rule cuts with
+#     every side at once, against a clip by the body's own planes and against Monte Carlo
+#   * the update is inferred, and a device cache cuts the eight-sided apex as the host does
+#   * the clipper itself, called directly, as the one exception to going through the cache: every
+#     clipped polytope stays closed -- its faces' area vectors sum to zero -- and a clip allocates
+#     nothing, neither of which a cell's outputs can show
+#
+# Near a many-sided apex a cell can hold two sides that meet only at the apex, not along an edge;
+# no Boolean rule covers that pair, so the cell is cut by the fallback plane and flagged. Those
+# cells are checked for the flag, not compared.
 
 using Random
 using KernelAbstractions
-using CutCellMethods: TriScratch, poly_box!, poly_clip!, poly_volume_moment, poly_tag_moment,
-                      poly_area_vector_sum, poly_face_area_vector, poly_nf, poly_nv,
-                      poly_patch_components, fluid_convex_moments, pg_tri_box!, pg_rect!,
-                      pg_clip!, pg_area_moment, FLAG_OVERFLOW, FLAG_CHAIN_FAIL
+using CutCellMethods: TriScratch, boundary_faces, CELL_CUT, RULE_CONVEX,
+                      FLAG_OVERFLOW, FLAG_CHAIN_FAIL, FLAG_UNSUPPORTED,
+                      poly_box!, poly_clip!, poly_nf, poly_isempty, poly_face_area_vector,
+                      poly_volume_moment
 
-const TC_TOL = 1e-12
+isdefined(@__MODULE__, :tm_box) || include("tri_meshes.jl")
 
-tc_box_volume(scr, U) = first(poly_volume_moment(scr, 1, U / 2))
+const TC = TriClippingCutCell()
+const TC_BOX_FACES = ("-x", "+x", "-y", "+y", "-z", "+z")
 
-# The volume of `n . x <= d` in the box [0, U], by CartesianMeshes' analytic unit-cube formula:
-# with x = U .* y the half-space is (n .* U) . y <= d in the unit cube.
-tc_exact_volume(n, d, U) = CartesianMeshes.get_volume_fraction(n .* U, d) * prod(U)
-
-# A random unit normal.
-tc_randn3(rng) = normalize(SVector(randn(rng), randn(rng), randn(rng)))
-
-# Monte Carlo volume of the box [0, U] kept by every plane `(n, d)` in `planes` (n . x <= d).
-function tc_mc_volume(rng, U, planes, N)
-    hit = 0
-    for _ in 1:N
-        x = SVector(rand(rng), rand(rng), rand(rng)) .* U
-        hit += all(p -> dot(p[1], x) <= p[2], planes)
-    end
-    return hit / N * prod(U)
+# The fluid fraction of cell `ci` of `g` against the plane `n . x = d`, solid below, by
+# CartesianMeshes' analytic unit-cube formula: with x = o + U .* y the solid is
+# (n .* U) . y <= d - n . o in the unit cube.
+function tc_exact_fluid(g, ci, (n, d))
+    o = get_node(g, ci)
+    U = get_node(g, ci + CartesianIndex(1, 1, 1)) - o
+    return 1 - CartesianMeshes.get_volume_fraction(n .* U, d - dot(n, o))
 end
 
-@kernel function tc_clip_kernel!(vol, scr, @Const(normals), @Const(offsets), U, tol)
-    s = @index(Global, Linear)
-    poly_box!(scr, s, U)
-    poly_clip!(scr, s, normals[s], offsets[s], 7, tol, false)
-    v, _ = poly_volume_moment(scr, s, U / 2)
-    @inbounds vol[s] = v
+# Every cut cell a single box face alone crosses, one of `faces`, against that face's exact plane:
+# the cells' fluid fractions and the worst error.
+function tc_single_face(cache, g, planes; faces=TC_BOX_FACES)
+    topo = cache.work.topo
+    fluid = Float64[]
+    worst = 0.0
+    for ci in CartesianIndices(Tuple(g.n))
+        (cache.cells.kind[ci] == CELL_CUT && cache.info.npatch[ci] == 1) || continue
+        name = topo.patch_name[only(boundary_faces(cache, ci)).patch]
+        name in faces || continue
+        exact = tc_exact_fluid(g, ci, planes[findfirst(==(name), TC_BOX_FACES)])
+        push!(fluid, exact)
+        worst = max(worst, abs(cache.cells.volume_fraction[ci] - exact))
+    end
+    return fluid, worst
+end
+
+tc_count(cache, bits) = count(f -> f & bits != 0x00, cache.info.flags)
+
+# The sum of slot 1's face area vectors: zero for a closed polytope.
+function tc_area_sum(scr)
+    S = zero(SVector{3,Float64})
+    for f in 1:poly_nf(scr, 1)
+        S += poly_face_area_vector(scr, 1, f)
+    end
+    return S
+end
+
+# The box `[0, U]` clipped by `planes` in turn, as a cell's cut runs: the clips' flags OR'd, the
+# volume, and the area-vector sum.
+function tc_clip_all(scr, U, planes, tol)
+    poly_box!(scr, 1, U)
+    st = 0x00
+    for (i, (n, d)) in enumerate(planes)
+        st |= poly_clip!(scr, 1, n, d, 6 + i, tol, false)
+        poly_isempty(scr, 1) && break
+    end
+    return st, first(poly_volume_moment(scr, 1, U / 2)), tc_area_sum(scr)
+end
+
+# A random plane through the box `[0, U]`, or -- a third of the time each -- a degenerate one: an
+# axis or diagonal normal through a box corner or an edge midpoint, so the cut runs exactly through
+# vertices, along edges or over a face. Oriented to keep the box's centre, and never through it --
+# two opposite planes through the centre would leave a slab of no thickness -- so a stack of them
+# leaves something to measure.
+function tc_plane(rng, U)
+    while true
+        n, d = _tc_plane(rng, U)
+        c = dot(n, U / 2)
+        c != d && return c < d ? (n, d) : (-n, -d)
+    end
+end
+
+function _tc_plane(rng, U)
+    r = rand(rng)
+    if r < 1 / 3
+        n = normalize(SVector(randn(rng), randn(rng), randn(rng)))
+        p = SVector(rand(rng), rand(rng), rand(rng)) .* U
+    else
+        n = SVector{3,Float64}(rand(rng, (-1, 0, 1), 3))
+        n == zero(n) && (n = SVector(1.0, 0.0, 0.0))
+        p = SVector{3,Float64}(rand(rng, (0, 1), 3)) .* U
+        r < 2 / 3 || (p = p .* SVector{3,Float64}(rand(rng, (0.5, 1), 3)))
+    end
+    return n, dot(n, p)
 end
 
 @testset verbose = true "tri clipping: clippers" begin
-    scr = TriScratch(KernelAbstractions.CPU(), Float64, 1)
-    U1 = SVector(1.0, 1.0, 1.0)
-    Us = SVector(0.7, 1.3, 0.45)
+    # Dyadic cell size and origin, so lattice nodes and edge midpoints are exact numbers.
+    g = CartesianGrid(SVector(-1.0, -1.0, -1.0), (16, 16, 16), SVector(0.125, 0.125, 0.125))
+    # ...and a stretched one, whose cells are 0.7 x 1.3 x 0.45 of a cubic cell.
+    gs = CartesianGrid(SVector(-1.05, -0.975, -1.0125), (24, 12, 36), SVector(0.0875, 0.1625, 0.05625))
 
-    @testset "the box" begin
-        for U in (U1, Us)
-            poly_box!(scr, 1, U)
-            V, M = poly_volume_moment(scr, 1, U / 2)
-            @test V ≈ prod(U) atol = 1e-15
-            @test M / V ≈ U / 2 atol = 1e-15
-            @test poly_area_vector_sum(scr, 1) == zero(SVector{3,Float64})
-            @test poly_nf(scr, 1) == 6 && poly_nv(scr, 1) == 8
-            # Each face's vector area is its outward normal times its area, tagged by direction.
-            for dir in 1:6
-                S, A, _ = poly_tag_moment(scr, 1, dir)
-                ax = CartesianMeshes.direction_axis(dir)
-                full = prod(U) / U[ax]
-                @test S ≈ CartesianMeshes.direction_sign(dir) * full * SVector(ntuple(a -> a == ax ? 1.0 : 0.0, 3))
-                @test A ≈ full
-            end
-        end
-    end
-
-    @testset "axis-aligned cuts are exact" begin
-        for U in (U1, Us), ax in 1:3, t in (0.1, 0.3, 0.5, 0.77)
-            e = SVector(ntuple(a -> a == ax ? 1.0 : 0.0, 3))
-            poly_box!(scr, 1, U)
-            @test poly_clip!(scr, 1, e, t * U[ax], 7, TC_TOL, false) == 0x00
-            @test tc_box_volume(scr, U) ≈ t * prod(U) rtol = 4eps()
-            poly_box!(scr, 1, U)
-            @test poly_clip!(scr, 1, -e, -t * U[ax], 7, TC_TOL, false) == 0x00
-            @test tc_box_volume(scr, U) ≈ (1 - t) * prod(U) rtol = 4eps()
-            # The cap is the cut face: area of the box's cross-section, normal along +e.
-            S, A, M = poly_tag_moment(scr, 1, 7)
-            @test A ≈ prod(U) / U[ax]
-            @test S ≈ -A * e
-            @test (M / A)[ax] ≈ t * U[ax]
-        end
-    end
-
-    @testset "corner cut through three edge midpoints is 1/48" begin
-        n = normalize(SVector(1.0, 1.0, 1.0))
-        poly_box!(scr, 1, U1)
-        @test poly_clip!(scr, 1, n, 0.5 / sqrt(3), 7, TC_TOL, false) == 0x00
-        @test tc_box_volume(scr, U1) ≈ 1 / 48 rtol = 1e-14
-        @test poly_nf(scr, 1) == 4
-        _, A, _ = poly_tag_moment(scr, 1, 7)
-        @test A ≈ sqrt(3) / 8
-    end
-
-    @testset "a two-plane wedge" begin
-        # Solid under z = 0.5 - 0.3|x - 0.5|, extruded in y: volume 0.5 - 0.3/4.
-        p1 = SVector(-0.3, 0.0, 1.0)
-        p2 = SVector(0.3, 0.0, 1.0)
-        n1, d1 = p1 / norm(p1), 0.35 / norm(p1)
-        n2, d2 = p2 / norm(p2), 0.65 / norm(p2)
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, n1, d1, 7, TC_TOL, false)
-        poly_clip!(scr, 1, n2, d2, 8, TC_TOL, false)
-        Vs, Ms = poly_volume_moment(scr, 1, U1 / 2)
-        @test Vs ≈ 0.425 rtol = 1e-14
-        @test poly_area_vector_sum(scr, 1) ≈ zero(SVector{3,Float64}) atol = 1e-15
-        # The two patch faces meet along the crease: one component.
-        @test poly_patch_components(scr, 1) == 1
-        # The fluid, as disjoint convex pieces, is the box less the solid.
-        planes = (SVector(n1..., d1), SVector(n2..., d2))
-        Vf, Mf, st = fluid_convex_moments(scr, 1, U1, planes, 2, TC_TOL)
-        @test st == 0x00
-        @test Vf ≈ 1 - 0.425 rtol = 1e-14
-        @test Mf + Ms ≈ U1 / 2 atol = 1e-15
-    end
-
-    @testset "degenerate planes" begin
-        n = normalize(SVector(1.0, 1.0, 1.0))
-        # Through three vertices: the corner tetrahedron, 1/6.
-        poly_box!(scr, 1, U1)
-        @test poly_clip!(scr, 1, n, 1 / sqrt(3), 7, TC_TOL, false) == 0x00
-        @test tc_box_volume(scr, U1) ≈ 1 / 6 rtol = 1e-14
-        @test poly_nv(scr, 1) == 4 && poly_nf(scr, 1) == 4
-        # ...and its complement, which keeps five of the corners on the plane side.
-        poly_box!(scr, 1, U1)
-        @test poly_clip!(scr, 1, -n, -1 / sqrt(3), 7, TC_TOL, false) == 0x00
-        @test tc_box_volume(scr, U1) ≈ 5 / 6 rtol = 1e-14
-        @test poly_area_vector_sum(scr, 1) ≈ zero(SVector{3,Float64}) atol = 1e-15
-        # Along a face diagonal edge-to-edge: half the cube, both ways.
-        m = normalize(SVector(1.0, 1.0, 0.0))
-        for sgn in (1, -1)
-            poly_box!(scr, 1, U1)
-            @test poly_clip!(scr, 1, sgn * m, sgn / sqrt(2), 7, TC_TOL, false) == 0x00
-            @test tc_box_volume(scr, U1) ≈ 0.5 rtol = 1e-14
-            @test poly_nf(scr, 1) == 5
-        end
-        # Containing one box edge: removes nothing, or everything.
-        poly_box!(scr, 1, U1)
-        @test poly_clip!(scr, 1, m, 2 / sqrt(2), 7, TC_TOL, false) == 0x00
-        @test tc_box_volume(scr, U1) ≈ 1
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, -m, -2 / sqrt(2), 7, TC_TOL, false)
-        @test poly_nf(scr, 1) == 0
-        # Coincident with a face: nothing kept on the far side, nothing lost on the near side.
-        ex = SVector(1.0, 0.0, 0.0)
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, ex, 0.0, 7, TC_TOL, false)
-        @test poly_nf(scr, 1) == 0
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, -ex, 0.0, 7, TC_TOL, false)
-        @test tc_box_volume(scr, U1) ≈ 1
-        # With `retag` (a fluid piece), the coincident face becomes the interface...
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, -ex, 0.0, 9, TC_TOL, true)
-        S, A, _ = poly_tag_moment(scr, 1, 9)
-        @test A ≈ 1 && S ≈ SVector(-1.0, 0.0, 0.0)
-        @test first(poly_tag_moment(scr, 1, 1)) == zero(SVector{3,Float64})
-        # ...and without it the Cartesian face keeps its tag.
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, -ex, 0.0, 9, TC_TOL, false)
-        @test poly_tag_moment(scr, 1, 1)[2] ≈ 1
-        # Within the snap tolerance counts as on the plane.
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, -ex, 1e-14, 9, TC_TOL, true)
-        @test tc_box_volume(scr, U1) ≈ 1 && poly_tag_moment(scr, 1, 9)[2] ≈ 1
-        # The same plane twice, and a plane through vertices a previous clip inserted.
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, ex, 0.5, 7, TC_TOL, false)
-        @test poly_clip!(scr, 1, ex, 0.5, 8, TC_TOL, false) == 0x00
-        @test tc_box_volume(scr, U1) ≈ 0.5
-        @test poly_clip!(scr, 1, normalize(SVector(1.0, 0.0, 1.0)), 0.5 / sqrt(2), 8, TC_TOL, false) == 0x00
-        @test tc_box_volume(scr, U1) ≈ 0.125 rtol = 1e-14
-        @test poly_area_vector_sum(scr, 1) ≈ zero(SVector{3,Float64}) atol = 1e-15
-    end
-
-    @testset "10^4 random planes against the analytic volume" begin
+    @testset "single planes against the analytic volume: $tag" for (tag, grid, trials) in
+            (("cubic cells", g, 60), ("stretched cells", gs, 40))
+        # A box turned to a random orientation and moved a random fraction of a cell, 2 x 2 quads a
+        # face: every cell crossed by one face alone is that face's plane clipping the cell.
         rng = Xoshiro(20260928)
+        half = SVector(0.42, 0.37, 0.33)
+        centre = SVector{3,Float64}(grid.x0) + SVector{3,Float64}(grid.n .* grid.d) / 2
+        cache = allocate_cache(grid, TC)
+        ncells = 0
         worst = 0.0
-        worst_closure = 0.0
-        bad = 0
-        for U in (U1, Us), _ in 1:5000
-            n = tc_randn3(rng)
-            # An offset between the box's lowest and highest corner along n: always a real cut.
-            lo = sum(min.(n .* U, 0.0))
-            hi = sum(max.(n .* U, 0.0))
-            d = lo + rand(rng) * (hi - lo)
-            poly_box!(scr, 1, U)
-            bad += poly_clip!(scr, 1, n, d, 7, TC_TOL, false) != 0x00
-            V = tc_box_volume(scr, U)
-            worst = max(worst, abs(V - tc_exact_volume(n, d, U)) / prod(U))
-            worst_closure = max(worst_closure, maximum(abs, poly_area_vector_sum(scr, 1)))
+        hard = 0
+        for _ in 1:trials
+            R = tm_frame(normalize(SVector(randn(rng), randn(rng), randn(rng)))) *
+                SMatrix{3,3,Float64}(cos(1.0), sin(1.0), 0, -sin(1.0), cos(1.0), 0, 0, 0, 1)
+            t = centre + 0.3 * (SVector(rand(rng), rand(rng), rand(rng)) .- 0.5) .* grid.d
+            box, _, _ = tm_box(-half, half; n=2, R=R, t=t)
+            update_cache!(cache, box, grid)
+            fluid, w = tc_single_face(cache, grid, tm_box_planes(-half, half, R, t))
+            ncells += length(fluid)
+            worst = max(worst, w)
+            hard += tc_count(cache, FLAG_OVERFLOW | FLAG_CHAIN_FAIL | FLAG_UNSUPPORTED)
         end
-        @test bad == 0
+        @test ncells > 10^4
         @test worst < 1e-12
-        @test worst_closure < 1e-14
+        @test hard == 0
     end
 
-    @testset "10^5 random eight-plane clips" begin
+    @testset "degenerate planes: through lattice nodes and edge midpoints" begin
+        # A box whose +x face lies on `n . x = s`. The grid's nodes sit at -1 + i/8, so with
+        # n = (1,1,1)/sqrt(3) and s = 0 the face passes through lattice nodes, three to a cell --
+        # a cut through cell vertices, leaving a corner tetrahedron of exactly 1/6 -- and half a
+        # step on, through three edge midpoints, leaving one of exactly 1/48. With n = (1,1,0)/sqrt(2)
+        # it runs along cell edges, halving the cells it passes diagonally through.
+        s3, s2 = sqrt(3.0), sqrt(2.0)
+        half = SVector(0.35, 0.3, 0.3)
+        for (nrm, s, want) in ((SVector(1.0, 1.0, 1.0) / s3, 0.0, 5 / 6),
+                               (SVector(1.0, 1.0, 1.0) / s3, 0.0625 / s3, 47 / 48),
+                               (SVector(1.0, 1.0, 0.0) / s2, 0.0, 1 / 2),
+                               (SVector(1.0, 1.0, 0.0) / s2, 0.0625 / s2, nothing))
+            R = tm_frame(nrm)
+            lo, hi = SVector(s - 2half[1], -half[2], -half[3]), SVector(s, half[2], half[3])
+            box, _, _ = tm_box(lo, hi; n=2, R=R)
+            cache = update_cache!(allocate_cache(g, TC), box, g)
+            fluid, worst = tc_single_face(cache, g, tm_box_planes(lo, hi, R); faces=("+x",))
+            @test length(fluid) >= 8
+            @test worst < 1e-14
+            want === nothing || @test count(f -> isapprox(f, want; atol=1e-14), fluid) > 0
+            @test tc_count(cache, FLAG_OVERFLOW | FLAG_CHAIN_FAIL | FLAG_UNSUPPORTED) == 0
+        end
+    end
+
+    @testset "many planes in one cell: pyramids of 3 to 8 sides" begin
         rng = Xoshiro(7)
-        bad = 0
-        grew = 0
-        worst_closure = 0.0
+        scr = TriScratch(KernelAbstractions.CPU(), Float64, 1)
+        cache = allocate_cache(g, TC)
+        apex_ok = 0
+        sides_seen = Set{Int}()
+        worst = 0.0
         mc_worst = 0.0
-        for trial in 1:100_000
-            U = trial % 2 == 0 ? U1 : Us
-            poly_box!(scr, 1, U)
-            Vprev = prod(U)
-            planes = NTuple{2,Any}[]
-            for k in 1:8
-                n = tc_randn3(rng)
-                # Through a random point of the box, so every plane is a candidate cut.
-                d = dot(n, SVector(rand(rng), rand(rng), rand(rng)) .* U)
-                push!(planes, (n, d))
-                bad += poly_clip!(scr, 1, n, d, 6 + k, TC_TOL, false) != 0x00
-                V = tc_box_volume(scr, U)
-                grew += V > Vprev + 1e-15
-                Vprev = V
+        ncut = nunsupported = 0
+        flagged = true
+        hard = 0
+        for trial in 1:300
+            k = rand(rng, 3:8)
+            apex = 0.3 * (SVector(rand(rng), rand(rng), rand(rng)) .- 0.5)
+            axis = normalize(SVector(randn(rng), randn(rng), randn(rng)))
+            mesh, planes, _ = tm_pyramid(; apex, axis, k, height=0.4 + 0.1rand(rng),
+                                         radius=0.25 + 0.1rand(rng), θ0=2π * rand(rng))
+            update_cache!(cache, mesh, g)
+            hard += tc_count(cache, FLAG_OVERFLOW | FLAG_CHAIN_FAIL)
+            # The apex cell: every side at once, by the convex rule.
+            ca = CartesianIndex(Tuple(floor.(Int, (apex - g.x0) ./ g.d) .+ 1))
+            if cache.info.npatch[ca] == k && cache.info.rule[ca] == RULE_CONVEX
+                apex_ok += 1
+                push!(sides_seen, k)
             end
-            worst_closure = max(worst_closure, maximum(abs, poly_area_vector_sum(scr, 1)))
-            if trial <= 200
-                est = tc_mc_volume(rng, U, planes, 20_000)
-                # Five binomial standard deviations.
-                p = Vprev / prod(U)
-                mc_worst = max(mc_worst, abs(est - Vprev) / prod(U) / (5 * sqrt(max(p * (1 - p), 1e-4) / 20_000)))
+            # Every cut cell a rule covers, against the body's own planes; the rest flagged.
+            for ci in CartesianIndices(Tuple(g.n))
+                cache.cells.kind[ci] == CELL_CUT || continue
+                ncut += 1
+                unsupported = cache.info.flags[ci] & FLAG_UNSUPPORTED != 0
+                flagged &= cache.cells.ambiguous[ci] == unsupported
+                if unsupported
+                    nunsupported += 1
+                else
+                    worst = max(worst, abs(cache.cells.volume_fraction[ci] -
+                                           (1 - tm_solid_fraction(scr, g, ci, planes))))
+                end
+            end
+            # ...and the apex cell against Monte Carlo, which shares no code with the clipper: five
+            # binomial standard deviations.
+            if trial <= 50
+                o, N = get_node(g, ca), 20_000
+                hit = count(1:N) do _
+                    x = o + SVector(rand(rng), rand(rng), rand(rng)) .* g.d
+                    all(p -> dot(p[1], x) <= p[2], planes)
+                end
+                solid = 1 - cache.cells.volume_fraction[ca]
+                mc_worst = max(mc_worst, abs(hit / N - solid) / (5 * sqrt(max(solid * (1 - solid), 1e-4) / N)))
             end
         end
-        @test bad == 0
-        @test grew == 0
-        @test worst_closure < 1e-14
+        @test apex_ok == 300
+        @test sides_seen == Set(3:8)
+        @test worst < 1e-13
         @test mc_worst < 1
+        @test hard == 0
+        @test flagged
+        @test nunsupported < 1e-3 * ncut
     end
 
-    @testset "fluid decomposition equals box minus solid" begin
-        rng = Xoshiro(11)
-        worst_v = 0.0
-        worst_m = 0.0
-        for trial in 1:2000, k in 2:4
-            U = trial % 2 == 0 ? U1 : Us
-            c = SVector(rand(rng), rand(rng), rand(rng)) .* U
-            planes = ntuple(_ -> (n = tc_randn3(rng); SVector(n..., dot(n, c) + 0.2 * randn(rng))), k)
-            poly_box!(scr, 1, U)
-            for (i, p) in enumerate(planes)
-                poly_clip!(scr, 1, SVector(p[1], p[2], p[3]), p[4], 6 + i, TC_TOL, false)
-            end
-            Vs, Ms = poly_volume_moment(scr, 1, U / 2)
-            Vf, Mf, st = fluid_convex_moments(scr, 1, U, planes, k, TC_TOL)
-            @test st == 0x00
-            worst_v = max(worst_v, abs(Vf + Vs - prod(U)) / prod(U))
-            worst_m = max(worst_m, maximum(abs, Mf + Ms - prod(U) * U / 2) / prod(U))
+    @testset "the clipper keeps its polytopes closed, and allocates nothing" begin
+        rng = Xoshiro(48)
+        scr = TriScratch(KernelAbstractions.CPU(), Float64, 1)
+        U = SVector(0.0875, 0.1625, 0.05625)   # the stretched grid's cell
+        h = minimum(U)
+        tol = 1e-10 * h
+        worst = 0.0
+        hard = 0x00
+        bad_volume = false
+        for _ in 1:10^4
+            planes = [tc_plane(rng, U) for _ in 1:rand(rng, 1:8)]
+            st, V, S = tc_clip_all(scr, U, planes, tol)
+            hard |= st
+            worst = max(worst, maximum(abs, S))
+            bad_volume |= !(0 < V <= prod(U) * (1 + 1e-14))
         end
-        @test worst_v < 1e-14
-        @test worst_m < 1e-14
+        @test hard == 0x00
+        @test worst <= 1e-14 * h^2
+        @test !bad_volume
+        planes = [tc_plane(rng, U) for _ in 1:8]
+        tc_clip_all(scr, U, planes, tol)
+        @test (@allocated tc_clip_all(scr, U, planes, tol)) == 0
+        @inferred poly_clip!(scr, 1, planes[1][1], planes[1][2], 7, tol, false)
+        @inferred poly_volume_moment(scr, 1, U / 2)
     end
 
-    @testset "a split solid" begin
-        # A slab crossing the cell: two patch faces with no edge between them.
-        poly_box!(scr, 1, U1)
-        poly_clip!(scr, 1, SVector(0.0, 0.0, 1.0), 0.6, 7, TC_TOL, false)
-        poly_clip!(scr, 1, SVector(0.0, 0.0, -1.0), -0.4, 8, TC_TOL, false)
-        @test poly_patch_components(scr, 1) == 2
-        @test tc_box_volume(scr, U1) ≈ 0.2
+    @testset "the update is inferred" begin
+        box, _, _ = tm_box(SVector(-0.4, -0.3, -0.35), SVector(0.35, 0.4, 0.3); n=2)
+        cache = allocate_cache(g, TC)
+        @test (@inferred update_cache!(cache, box, g)) === cache
     end
 
-    @testset "planar polygons" begin
-        lo = zero(SVector{3,Float64})
-        # A triangle covering the whole z = 0.5 cross-section clips to that square.
-        b, m = pg_tri_box!(scr, 1, SVector(-1.0, -1.0, 0.5), SVector(3.0, -1.0, 0.5),
-                           SVector(-1.0, 3.0, 0.5), lo, U1, TC_TOL)
-        A, M = pg_area_moment(scr, 1, b, m, SVector(0.0, 0.0, 1.0))
-        @test m == 4 && A ≈ 1 && M / A ≈ SVector(0.5, 0.5, 0.5)
-        # Every new vertex sits exactly on the box face it was clipped to.
-        @test all(i -> all(x -> x in (0.0, 1.0), scr.pg[i, b, 1][1:2]), 1:m)
-        # Inside: untouched. Lying in a box face: kept (the box is closed). Outside: gone.
-        b, m = pg_tri_box!(scr, 1, SVector(0.1, 0.1, 0.2), SVector(0.8, 0.2, 0.3),
-                           SVector(0.3, 0.9, 0.7), lo, U1, TC_TOL)
-        @test m == 3
-        b, m = pg_tri_box!(scr, 1, SVector(0.0, 0.0, 0.0), SVector(1.0, 0.0, 0.0),
-                           SVector(0.0, 1.0, 0.0), lo, U1, TC_TOL)
-        @test pg_area_moment(scr, 1, b, m, SVector(0.0, 0.0, 1.0))[1] ≈ 0.5
-        b, m = pg_tri_box!(scr, 1, SVector(0.0, 0.0, 1.5), SVector(1.0, 0.0, 1.5),
-                           SVector(0.0, 1.0, 1.5), lo, U1, TC_TOL)
-        @test m == 0
-        # A triangle crossing a corner, against a fine Monte Carlo of its plane.
-        rng = Xoshiro(3)
-        a, bb, c = SVector(-0.4, 0.3, 0.2), SVector(0.9, -0.5, 0.6), SVector(0.5, 1.4, 1.3)
-        b, m = pg_tri_box!(scr, 1, a, bb, c, lo, U1, TC_TOL)
-        nt = normalize(cross(bb - a, c - a))
-        A, _ = pg_area_moment(scr, 1, b, m, nt)
-        N = 400_000
-        inside = count(1:N) do _
-            u, v = rand(rng), rand(rng)
-            u + v > 1 && ((u, v) = (1 - u, 1 - v))
-            x = a + u * (bb - a) + v * (c - a)
-            all(0 .<= x .<= 1)
-        end
-        Atri = norm(cross(bb - a, c - a)) / 2
-        @test A ≈ inside / N * Atri rtol = 0.01
-
-        # A face square against a plane: half of it by the diagonal.
-        b, m, nrm = pg_rect!(scr, 1, 3, 0.0, lo, U1)
-        b, m = pg_clip!(scr, 1, b, m, normalize(SVector(1.0, 1.0, 0.0)), 1 / sqrt(2), TC_TOL, true)
-        @test pg_area_moment(scr, 1, b, m, nrm)[1] ≈ 0.5
-        for ax in 1:3
-            b, m, nrm = pg_rect!(scr, 1, ax, 0.25, lo, Us)
-            @test pg_area_moment(scr, 1, b, m, nrm)[1] ≈ prod(Us) / Us[ax]
-            # A plane containing the face: closed keeps it, open (the fluid side) drops it.
-            e = SVector(ntuple(a -> a == ax ? 1.0 : 0.0, 3))
-            @test pg_clip!(scr, 1, b, m, e, 0.25, TC_TOL, false)[2] == 4
-            @test pg_clip!(scr, 1, b, m, e, 0.25, TC_TOL, true)[2] == 0
-        end
-    end
-
-    @testset "allocation-free and inferred" begin
-        n = normalize(SVector(0.3, -0.5, 0.8))
-        clip_once(scr, U, n) = (poly_box!(scr, 1, U); poly_clip!(scr, 1, n, 0.1, 7, TC_TOL, false))
-        clip_once(scr, U1, n)
-        @test (@allocated clip_once(scr, U1, n)) == 0
-        @test (@inferred poly_clip!(scr, 1, n, 0.2, 8, TC_TOL, false)) isa UInt8
-        @test (@allocated poly_volume_moment(scr, 1, U1 / 2)) == 0
-        @test (@inferred poly_volume_moment(scr, 1, U1 / 2)) isa Tuple{Float64,SVector{3,Float64}}
-        @test (@allocated poly_tag_moment(scr, 1, 7)) == 0
-        @test (@allocated poly_patch_components(scr, 1)) == 0
-        planes = (SVector(n..., 0.3), SVector(-n[2], n[1], n[3], 0.2))
-        fluid_convex_moments(scr, 1, U1, planes, 2, TC_TOL)
-        @test (@allocated fluid_convex_moments(scr, 1, U1, planes, 2, TC_TOL)) == 0
-        tri_once(scr) = pg_tri_box!(scr, 1, SVector(-0.4, 0.3, 0.2), SVector(0.9, -0.5, 0.6),
-                                    SVector(0.5, 1.4, 1.3), zero(SVector{3,Float64}), U1, TC_TOL)
-        tri_once(scr)
-        @test (@allocated tri_once(scr)) == 0
-        @test (@inferred tri_once(scr)) isa Tuple{Int,Int}
-    end
-
-    @testset "inside a kernel" begin
-        rng = Xoshiro(5)
-        ns = 512
-        normals = [tc_randn3(rng) for _ in 1:ns]
-        offsets = [dot(normals[i], SVector(rand(rng), rand(rng), rand(rng)) .* Us) for i in 1:ns]
-        host = map(1:ns) do i
-            poly_box!(scr, 1, Us)
-            poly_clip!(scr, 1, normals[i], offsets[i], 7, TC_TOL, false)
-            tc_box_volume(scr, Us)
-        end
-        cpu = KernelAbstractions.CPU()
-        kscr = TriScratch(cpu, Float64, ns)
-        vol = zeros(ns)
-        tc_clip_kernel!(cpu, 64)(vol, kscr, normals, offsets, Us, TC_TOL; ndrange=ns)
-        KernelAbstractions.synchronize(cpu)
-        @test vol == host
-        if HAS_GPU
-            gpu = CUDABackend()
-            gscr = TriScratch(gpu, Float64, ns)
-            gvol = CUDA.zeros(Float64, ns)
-            tc_clip_kernel!(gpu, 64)(gvol, gscr, CuArray(normals), CuArray(offsets), Us, TC_TOL; ndrange=ns)
-            KernelAbstractions.synchronize(gpu)
-            @test Array(gvol) ≈ host rtol = 1e-12
+    if HAS_GPU
+        @testset "the eight-sided apex on the device" begin
+            mesh, _, _ = tm_pyramid(; apex=SVector(0.013, -0.021, 0.037), axis=normalize(SVector(0.3, -0.5, 0.8)),
+                                    k=8, height=0.45, radius=0.3, θ0=0.2)
+            g32 = CartesianMeshes.adapt_type(Float32, g)
+            host = update_cache!(allocate_cache(g32, TC), mesh, g32)
+            dev = update_cache!(allocate_cache(g32, TC; backend=CUDABackend()), mesh, g32)
+            @test maximum(host.info.npatch) == 8
+            @test Array(dev.cells.kind) == host.cells.kind
+            @test Array(dev.info.rule) == host.info.rule && Array(dev.info.npatch) == host.info.npatch
+            @test maximum(abs.(Array(dev.cells.volume_fraction) .- host.cells.volume_fraction)) < 10 * eps(Float32)
         end
     end
 end

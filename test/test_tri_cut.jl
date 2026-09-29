@@ -17,65 +17,12 @@
 
 using CutCellMethods: CELL_CUT, RULE_SINGLE, RULE_CONVEX, RULE_CONCAVE, RULE_FALLBACK, RULE_MIXED,
                       FLAG_MULTI_PATCH, FLAG_UNSUPPORTED, FLAG_SPLIT, FLAG_OVERFLOW,
-                      FLAG_CHAIN_FAIL, TriScratch, poly_box!, poly_clip!, poly_volume_moment
+                      FLAG_CHAIN_FAIL, TriScratch, cut_report
+using KernelAbstractions
 
 isdefined(@__MODULE__, :tm_box) || include("tri_meshes.jl")
 
 const TCUT = TriClippingCutCell()
-
-# The fraction of cell `ci` inside the convex body `n . x <= d` for every `(n, d)` in `planes`,
-# by clipping the cell with the body's own analytic planes -- not the method's fitted ones.
-function tcut_solid_fraction(scr, g, ci, planes)
-    o = get_node(g, ci)
-    U = get_node(g, ci + CartesianIndex(1, 1, 1)) - o
-    poly_box!(scr, 1, U)
-    for (n, d) in planes
-        poly_clip!(scr, 1, n, d - dot(n, o), 7, 1e-12, false)
-    end
-    return first(poly_volume_moment(scr, 1, U / 2)) / prod(U)
-end
-
-# A box `lo..hi` rotated by `R` and moved by `t`, as its six outward planes.
-function tcut_box_planes(lo, hi, R=SMatrix{3,3,Float64}(I), t=zero(SVector{3,Float64}))
-    P = Tuple{SVector{3,Float64},Float64}[]
-    for ax in 1:3, sgn in (-1, 1)
-        n = R * SVector(ntuple(a -> a == ax ? Float64(sgn) : 0.0, 3))
-        push!(P, (n, dot(n, R * (sgn > 0 ? hi : lo) + t)))
-    end
-    return P
-end
-
-# The prism hull of `tm_prism` as its seven outward planes.
-function tcut_prism_planes(; L, beam, deadrise, depth, t)
-    b = beam / 2
-    zc = b * tand(deadrise)
-    sec = (SVector(0.0, 0.0), SVector(b, zc), SVector(b, depth), SVector(-b, depth), SVector(-b, zc))
-    P = Tuple{SVector{3,Float64},Float64}[]
-    for k in 1:5
-        p, q = sec[k], sec[k % 5 + 1]
-        e = q - p
-        n = normalize(SVector(0.0, e[2], -e[1]))
-        push!(P, (n, dot(n, SVector(0.0, p[1], p[2]) + t)))
-    end
-    push!(P, (SVector(-1.0, 0.0, 0.0), -t[1]))
-    push!(P, (SVector(1.0, 0.0, 0.0), t[1] + L))
-    return P
-end
-
-# A convex prism along x over `[t[1], t[1] + L]` whose section is `sec`, (y, z) corners
-# counter-clockwise seen from +x, offset by `t`, as its outward planes.
-function tcut_yz_prism(sec, L, t)
-    P = Tuple{SVector{3,Float64},Float64}[]
-    for k in eachindex(sec)
-        p, q = sec[k], sec[k % length(sec) + 1]
-        e = q - p
-        n = normalize(SVector(0.0, e[2], -e[1]))
-        push!(P, (n, dot(n, SVector(0.0, p[1], p[2]) + t)))
-    end
-    push!(P, (SVector(-1.0, 0.0, 0.0), -t[1]))
-    push!(P, (SVector(1.0, 0.0, 0.0), t[1] + L))
-    return P
-end
 
 # Per-cell volume-fraction errors against `solid(ci)`.
 tcut_errors(cache, g, solid) =
@@ -96,8 +43,8 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
                          (SVector(-0.375, -0.5, -0.25), SVector(0.5, 0.25, 0.625)))
             box, V, _ = tm_box(lo, hi; n=3)
             cache = update_cache!(allocate_cache(g, TCUT), box, g)
-            P = tcut_box_planes(lo, hi)
-            @test maximum(tcut_errors(cache, g, ci -> tcut_solid_fraction(scr, g, ci, P))) < 1e-13
+            P = tm_box_planes(lo, hi)
+            @test maximum(tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, P))) < 1e-13
             @test sum(1 .- cache.cells.volume_fraction) * prod(g.d) ≈ V rtol = 1e-13
             @test tcut_count(cache, FLAG_UNSUPPORTED) == 0
             # Edges and corners are convex creases, cut by the convex rule.
@@ -109,8 +56,8 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         lo, hi, t = SVector(-0.45, -0.3, -0.25), SVector(0.4, 0.35, 0.3), SVector(0.013, -0.021, 0.007)
         rbox, V, _ = tm_box(lo, hi; n=3, R=R, t=t)
         cache = update_cache!(allocate_cache(g, TCUT), rbox, g)
-        P = tcut_box_planes(lo, hi, R, t)
-        @test maximum(tcut_errors(cache, g, ci -> tcut_solid_fraction(scr, g, ci, P))) < 1e-13
+        P = tm_box_planes(lo, hi, R, t)
+        @test maximum(tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, P))) < 1e-13
         @test sum(1 .- cache.cells.volume_fraction) * prod(g.d) ≈ V rtol = 1e-13
         @test tcut_count(cache, FLAG_UNSUPPORTED) == 0
         # A convex edge passing just outside a cell whose box both its faces cross leaves the cell's
@@ -124,8 +71,8 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         t = SVector(-0.7, 0.013, -0.3)
         hull, V, _ = tm_prism(; kw..., nx=5, t=t)
         cache = update_cache!(allocate_cache(g, TCUT), hull, g)
-        P = tcut_prism_planes(; kw..., t=t)
-        @test maximum(tcut_errors(cache, g, ci -> tcut_solid_fraction(scr, g, ci, P))) < 1e-13
+        P = tm_prism_planes(; kw..., t=t)
+        @test maximum(tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, P))) < 1e-13
         @test sum(1 .- cache.cells.volume_fraction) * prod(g.d) ≈ V rtol = 1e-13
         @test tcut_count(cache, FLAG_UNSUPPORTED) == 0
         @test count(==(RULE_CONVEX), cache.info.rule) > 50
@@ -135,9 +82,9 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         o = SVector(-0.41, -0.39, -0.43)
         lb, V = tm_lblock(a=0.4, hz=0.9, t=o)
         cache = update_cache!(allocate_cache(g, TCUT), lb, g)
-        B1 = tcut_box_planes(o, o + SVector(0.8, 0.4, 0.9))
-        B2 = tcut_box_planes(o + SVector(0.0, 0.4, 0.0), o + SVector(0.4, 0.8, 0.9))
-        err = tcut_errors(cache, g, ci -> tcut_solid_fraction(scr, g, ci, B1) + tcut_solid_fraction(scr, g, ci, B2))
+        B1 = tm_box_planes(o, o + SVector(0.8, 0.4, 0.9))
+        B2 = tm_box_planes(o + SVector(0.0, 0.4, 0.0), o + SVector(0.4, 0.8, 0.9))
+        err = tcut_errors(cache, g, ci -> tm_solid_fraction(scr, g, ci, B1) + tm_solid_fraction(scr, g, ci, B2))
         @test maximum(err) < 1e-13
         # The concave edge alone is cut by the concave rule; where it meets the convex top and
         # bottom faces, one cell at each end, by the mixed rule.
@@ -154,10 +101,10 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         for (b1, b2) in ((0.35, 0.42), (0.30, 0.41), (0.33, 0.36))
             hull, V, _ = tm_chine_prism(L=L, b1=b1, b2=b2, z1=z1, depth=depth, nx=5, t=t)
             cache = update_cache!(allocate_cache(g, TCUT), hull, g)
-            pieces = (tcut_yz_prism((SVector(0.0, 0.0), SVector(b1, z1), SVector(b1, depth), SVector(-b1, depth), SVector(-b1, z1)), L, t),
-                      tcut_yz_prism((SVector(b1, z1), SVector(b2, z1), SVector(b2, depth), SVector(b1, depth)), L, t),
-                      tcut_yz_prism((SVector(-b2, z1), SVector(-b1, z1), SVector(-b1, depth), SVector(-b2, depth)), L, t))
-            err = tcut_errors(cache, g, ci -> sum(P -> tcut_solid_fraction(scr, g, ci, P), pieces))
+            pieces = (tm_yz_prism((SVector(0.0, 0.0), SVector(b1, z1), SVector(b1, depth), SVector(-b1, depth), SVector(-b1, z1)), L, t),
+                      tm_yz_prism((SVector(b1, z1), SVector(b2, z1), SVector(b2, depth), SVector(b1, depth)), L, t),
+                      tm_yz_prism((SVector(-b2, z1), SVector(-b1, z1), SVector(-b1, depth), SVector(-b2, depth)), L, t))
+            err = tcut_errors(cache, g, ci -> sum(P -> tm_solid_fraction(scr, g, ci, P), pieces))
             @test maximum(err) < 1e-13
             @test sum(1 .- cache.cells.volume_fraction) * prod(g.d) ≈ V rtol = 1e-13
             @test count(==(RULE_MIXED), cache.info.rule) >= 4
@@ -167,13 +114,14 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
 
     @testset "a sphere converges" begin
         sph, _, _ = tm_icosphere(r=0.7, c=SVector(0.031, -0.017, 0.022), level=6)
-        Vmesh = CutCellMethods.build_topology(sph, TCUT, 0.03).volume
         errs = map((16, 32)) do n
             gg = CartesianGrid(SVector(-1.0, -1.0, -1.0), (n, n, n), SVector(2 / n, 2 / n, 2 / n))
             cache = update_cache!(allocate_cache(gg, TCUT), sph, gg)
             @test all(iszero, cache.info.flags)
             @test all(r -> r == RULE_SINGLE || r == 0x00, cache.info.rule)
-            abs(sum(1 .- cache.cells.volume_fraction) * prod(gg.d) - Vmesh) / Vmesh
+            # Against the mesh's own volume, which is the faceted sphere's, not the true one's.
+            r = cut_report(cache)
+            abs(r.solid_volume - r.mesh_volume) / r.mesh_volume
         end
         @test errs[1] < 1e-4
         # Second order, or better: halving h cuts the error at least fourfold.
@@ -226,9 +174,9 @@ tcut_count(cache, bit) = count(f -> f & bit != 0x00, cache.info.flags)
         if hull === nothing
             @info "gpph_clean.inp not generated (examples/geometry/run_generate_mesh.jl): skipped"
         else
-            Vmesh = @test_logs match_mode = :any CutCellMethods.build_topology(hull, TCUT, 0.05).volume
             gh = CartesianGrid(SVector(-0.4, -1.5, -0.3), (172, 60, 40), SVector(0.05, 0.05, 0.05))
             cache = @test_logs match_mode = :any update_cache!(allocate_cache(gh, TCUT), hull, gh)
+            Vmesh = cache.work.topo.volume
             @test tcut_count(cache, FLAG_OVERFLOW) == 0
             @test tcut_count(cache, FLAG_CHAIN_FAIL) == 0
             @test !any(isnan, cache.cells.volume_fraction)

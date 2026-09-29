@@ -25,12 +25,14 @@ const RULE_CONCAVE  = 0x03  # fluid = intersection of the groups' fluid half-spa
 const RULE_FALLBACK = 0x04  # unsupported: one combined plane, flagged
 const RULE_MIXED    = 0x05  # convex and concave creases together: the planes' arrangement, labelled
 
-# At most this many fit groups go through the mixed rule, whose arrangement has 2^k pieces.
-const TRI_K_MIXED = 5
+# At most this many fit groups go through the mixed rule, whose arrangement has 2^k pieces. Six
+# covers a hull's bow-stem tip, where six CAD surfaces can meet in one cell; a cell pays for the
+# pieces of its own k only, so the cap costs the other cells nothing but scratch.
+const TRI_K_MIXED = 6
 const TRI_NLEAF = 1 << TRI_K_MIXED
 
 # Diagnostic bits in `TriClipCellInfo.flags`.
-const FLAG_MULTI_PATCH      = 0x01  # two or more fit groups: a crease (the brief's "feature")
+const FLAG_MULTI_PATCH      = 0x01  # two or more fit groups: a crease
 const FLAG_UNSUPPORTED      = 0x02  # no Boolean rule fits; cut by the fallback plane
 const FLAG_SPLIT            = 0x04  # the solid crosses the cell and splits its fluid in two (exact; not `ambiguous`)
 const FLAG_CLOSURE_FALLBACK = 0x08  # the clipped interface had no area to distribute the closure over

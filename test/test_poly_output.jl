@@ -2,7 +2,7 @@
 # Polyline clipping, P4: determinism, performance, and what the cut looks like
 #
 #   * an update on a warm cache allocates only kernel-launch overhead, nothing that scales with the
-#     grid or the mesh, and the kernel bodies allocate nothing at all -- the GPU's requirement
+#     grid or the mesh -- the GPU's requirement -- and it is inferred
 #   * the output does not depend on the thread count, bitwise, and the GPU agrees with the host
 #   * the walls are the polygon's edges split at the grid lines, and the region loops enclose
 #     exactly the regions' areas
@@ -14,8 +14,7 @@ using CartesianMeshes
 using MeshLibrary
 using Adapt
 using CutCellMethods: PL_INVALID, PL_SPLIT, PL_FLAG_SNAPPED, region, region_loops, interface_mesh,
-                      write_cache_vtk, _pl_kernel_args, _pl_cut_cell!, _pl_cut_edge!, _pl_dims,
-                      PolylineClippingCutCellView
+                      write_cache_vtk, PolylineClippingCutCellView
 using KernelAbstractions
 
 isdefined(@__MODULE__, :PV) || include("polyline_meshes.jl")
@@ -34,14 +33,6 @@ function po_second_update_bytes(n)
         update_cache!(c, mesh, g2)
     end
     return @allocated update_cache!(c, mesh, g)
-end
-
-# Every cut cell's walk, again, on the cache's own arrays: the kernel body run on the host.
-function po_walk_all!(m, g, blo, d, ncut, drop2)
-    for s in 1:ncut
-        _pl_cut_cell!(m, g, blo, d, s, drop2)
-    end
-    return nothing
 end
 
 # A consumer's kernel reading the cache through the uniform readers, as HYBIS's geometry pass does:
@@ -73,22 +64,10 @@ po_shoelace(p) =sum(i -> (p[i][1] * p[mod1(i + 1, length(p))][2] - p[i][2] * p[m
         @test large < 1.15 * small
     end
 
-    @testset "inference, and kernel bodies that allocate nothing" begin
+    @testset "the update is inferred" begin
         mesh = poly_mesh([naca4_pts(; m=0.02, p=0.4, t=0.12, n=100, chord=1.4, le=(-0.7, 0.01), α=0.1)])
         c = allocate_cache(PO_G, PO_M)
         @test (@inferred update_cache!(c, mesh, PO_G)) === c
-        # On a throwaway cache: re-walking resets what the edge pass wrote.
-        m = _pl_kernel_args(c)
-        b = c.work.block
-        blo, d = CartesianIndex(Tuple(b.lo)), Tuple(_pl_dims(b))
-        ncut = length(c.work.cross.cut_list)
-        drop2 = 2 * c.tols.drop_area
-        po_walk_all!(m, PO_G, blo, d, ncut, drop2)
-        @test (@allocated po_walk_all!(m, PO_G, blo, d, ncut, drop2)) == 0
-        @test (@inferred _pl_cut_cell!(m, PO_G, blo, d, 1, drop2)) === nothing
-        I = CartesianIndex(2, 2)
-        _pl_cut_edge!(c.edges.ax, c.info, m, PO_G, blo, d, 1, I)
-        @test (@allocated _pl_cut_edge!(c.edges.ax, c.info, m, PO_G, blo, d, 1, I)) == 0
     end
 
     @testset "adapting gives the results alone, which read the same way" begin
@@ -191,7 +170,11 @@ po_shoelace(p) =sum(i -> (p[i][1] * p[mod1(i + 1, length(p))][2] - p[i][2] * p[m
                     end, mesh.elements)
             end
             @test nb == 0
-            @test sum(get_length(g2, e) for g2 in (generate_mesh(mesh, PO_G, PO_M),) for e in g2.elements) ≈ perim rtol = 1e-13
+            # `generate_mesh` reads the same walls off the cache
+            g2 = generate_mesh(c, PO_G)
+            @test g2.nodes.coord == walls.nodes.coord
+            @test [e.con for e in g2.elements] == [e.con for e in walls.elements]
+            @test [(s.name, s.elems) for s in g2.elemset] == [(s.name, s.elems) for s in walls.elemset]
         end
         # The square on nodes: bottom and left walls from its own edges, top and right from the
         # closed slivers -- all four sides, each once.

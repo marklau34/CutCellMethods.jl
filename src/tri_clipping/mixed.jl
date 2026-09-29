@@ -14,9 +14,9 @@
 #    are the same, since no surface separates them;
 #  * every piece must end up labelled, and every face must agree with both of its pieces.
 #
-# Anything contradictory -- a feature the planes cannot represent -- sends the box to the fallback,
-# as before. On planar patches this is exact: an arrangement piece's face lies either wholly on a
-# patch or wholly off it, since the pieces are cut at the creases.
+# Anything contradictory -- a feature the planes cannot represent -- sends the box to the fallback.
+# On planar patches this is exact: an arrangement piece's face lies either wholly on a patch or
+# wholly off it, since the pieces are cut at the creases.
 #
 # Leaf statuses: 0 unknown, 1 fluid, 2 solid, 3 empty.
 

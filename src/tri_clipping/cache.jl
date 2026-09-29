@@ -31,7 +31,7 @@ What [`allocate_cache`](@ref)`(grid, TriClippingCutCell(); backend)` builds and
 nodes, or the same body under a moved grid; either way the topology is not rebuilt as long as the
 connectivity and the sets do not change.
 """
-struct TriClippingCutCellCache{T,C,I,S,W} <: AbstractCutCellCache
+struct TriClippingCutCellCache{T,C<:AbstractArray{<:CutCellData},I,S,W} <: AbstractCutCellCache
     method::TriClippingCutCell
     tols::TriClipTols{T}
     grid::CartesianGrid{3,T}

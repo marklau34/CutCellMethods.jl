@@ -1,134 +1,78 @@
 """
-    generate_mesh(geo, grid::CartesianGrid{2}, method::PLICCutCell; tol=0) -> Mesh{2}
-    generate_mesh(geo, grid::CartesianGrid{3}, method::PLICCutCell; tol=0, min_tri_area_fraction=1e-4) -> Mesh{3}
+    generate_mesh(cache::PLICCutCellCache, grid::CartesianGrid{D}; min_tri_area_fraction=1e-4) -> Mesh{D}
 
-The [`PLICCutCell`](@ref) surface of `geo` over `grid`, as a `MeshLibrary.Mesh{D}` of `Line` (2D) or
-`Tri` (3D) elements.
+The [`PLICCutCell`](@ref) surface of `cache`'s last update, as a `MeshLibrary.Mesh{D}` of `Line`
+(2D) or `Tri` (3D) elements: every cell's stored plane, clipped to its cell by
+[`extract_surface_plic`](@ref). Read off the cache, not fitted again, so the surface is the very fit
+the cache's fractions came from.
 
-Two steps: fit each cell's plane and keep the cells it actually cuts, then hand those to
-[`extract_surface_plic`](@ref), which clips them. The fit is one `get_sdf` per cell; the clip
-is paid only on the cut band. `method` is last rather than first, to match
-`MeshLibrary.generate_mesh` elsewhere.
+Every cell is handed over, cut or not, and the clip is what leaves the uncut ones out: a plane that
+does not cross its cell clips to fewer than three points in 3D (drawing nothing) or to a zero-length
+segment in 2D (dropped by `min_tri_area_fraction`). This costs memory proportional to the whole grid
+rather than the cut band, so it is meant for a picture, not a solver's inner loop.
 
-`tol` is the cut-cell test's noise floor: a cell is drawn where `tol < volume_fraction < 1 - tol`,
-which at the default `0` is exactly the geometric condition that the plane crosses the cell's
-interior -- a plane grazing a corner, or a degenerate normal, gives exactly `0` or `1` and drops
-out. Raise it to drop the slivers a plane passing just inside a corner still produces.
-`min_tri_area_fraction` is 3D-only and passes straight through to `extract_surface_plic`.
+`min_tri_area_fraction` drops an element smaller than that fraction of a cell's own: a triangle's
+area against a cell face in 3D, a segment's length against a cell edge in 2D. `0` keeps everything.
 
-**`grid` must be isotropic** (square cells in 2D, cubic in 3D), and this is the only place that is
-checked -- once per call rather than per cell; [`cut_cell_moments`](@ref) assumes it, because it
-has to stay launchable.
+`grid` is the grid of that update. The cache keeps only its `n`, which is checked; a grid moved
+since would place the surface wrongly. Its isotropy is checked when the cache is allocated/updated.
 
-Each plane is fitted from one cell alone, so **the surface comes out as a field of disconnected
-shards** rather than a stitched contour. For a watertight surface, reconstruct nodally with
+Each plane is fitted from one cell alone, so the surface comes out as a field of disconnected
+shards rather than a stitched contour. For a watertight surface, reconstruct nodally with
 [`MarchingSquaresCutCell`](@ref) or [`MarchingCubesCutCell`](@ref).
 
 An empty result warns and returns an empty mesh rather than throwing: a grid that misses the body,
-or lies wholly inside it, is a description of the grid rather than bad input. Runs on the host and
-returns host data.
+or lies wholly inside it, describes the grid rather than bad input. Runs on the host and returns
+host data; on a device cache the planes are copied to the host first.
 """
-function MeshLibrary.generate_mesh(geo, grid::CartesianGrid{2}, method::PLICCutCell; tol::Real=0)
-    idx, normals, intercepts = _cut_planes(geo, grid, tol)
-    return extract_surface_plic(normals, intercepts, idx, grid)
+function MeshLibrary.generate_mesh(cache::PLICCutCellCache, grid::CartesianGrid; min_tri_area_fraction::Real=1e-4)
+    _check_cache_size(cache.cells, grid)
+    normals = vec(Adapt.adapt(Array, cache.normals))
+    intercepts = vec(Adapt.adapt(Array, cache.intercepts))
+    mesh = extract_surface_plic(normals, intercepts, vec(CartesianIndices(Tuple(grid.n))), grid;
+                                min_tri_area_fraction)
+    isempty(mesh.elements) && @warn "no cut cell was found anywhere in `grid` -- returning an empty mesh. The grid may miss the body entirely, or lie wholly inside it."
+    return mesh
 end
 
-function MeshLibrary.generate_mesh(geo, grid::CartesianGrid{3}, method::PLICCutCell; tol::Real=0,
-                                   min_tri_area_fraction::Real=1e-4)
-    idx, normals, intercepts = _cut_planes(geo, grid, tol)
-    return extract_surface_plic(normals, intercepts, idx, grid; min_tri_area_fraction)
-end
-
-"""
-The cut cells and their planes, in the `(cell_indices, normals, intercepts)` shape
-[`extract_surface_plic`](@ref) takes: one [`plic_fit`](@ref) per cell, kept where
-`tol < volume_fraction < 1 - tol`.
-
-`volume_fraction` is the **fluid** fraction, so this is the complement of `cell_plane`'s own
-`fraction`; the test is symmetric in `tol` either way, but the fit is taken through `plic_fit` --
-the same fit `cut_cell_moments(PLICCutCell(), ...)` stores -- so that the number tested here is
-the one a consumer sees.
-
-One threaded screening pass over the whole grid, then a serial gather that re-fits only the kept
-cells, so nothing `O(volume)` is stored for the cells that are dropped. Host-only, like
-[`generate_mesh`](@ref) itself -- it builds `Vector`s.
-"""
-function _cut_planes(geo, grid::CartesianGrid{D,T}, tol::Real) where {D,T}
-    _require_isotropic(grid)
-    lo = T(tol)
-    hi = one(T) - lo
-    all_ci = CartesianIndices(Tuple(grid.n))
-
-    # The threaded half: one `Bool` per cell into a preallocated mask. Disjoint slots, no shared
-    # accumulator, no order dependence -- unlike the gather below, where three `push!`es into
-    # shared `Vector`s would race and scramble the element order the mesh is numbered by.
-    #
-    # A mask rather than the fits themselves: `normal` plus `intercept` is 32 bytes a cell in 3D
-    # against one byte here, at the price of a second `get_sdf` on the cut band alone.
-    keep = Vector{Bool}(undef, length(all_ci))
-    if length(all_ci) > THREAD_FLOOR
-        @batch for k in eachindex(keep)
-            @inbounds keep[k] = lo < plic_fit(grid, geo, all_ci[k]).frac < hi
-        end
-    else
-        for k in eachindex(keep)
-            @inbounds keep[k] = lo < plic_fit(grid, geo, all_ci[k]).frac < hi
-        end
-    end
-
-    n_cut = count(keep)
-    idx = Vector{CartesianIndex{D}}(undef, n_cut)
-    normals = Vector{SVector{D,T}}(undef, n_cut)
-    intercepts = Vector{T}(undef, n_cut)
-    j = 0
-    for k in eachindex(keep)
-        @inbounds keep[k] || continue
-        ci = @inbounds all_ci[k]
-        f = plic_fit(grid, geo, ci)
-        j += 1
-        @inbounds idx[j] = ci
-        @inbounds normals[j] = f.normal
-        @inbounds intercepts[j] = f.intercept
-    end
-
-    iszero(n_cut) && @warn "no cut cell was found anywhere in `grid` -- returning an empty mesh. The grid may miss the body entirely, or lie wholly inside it."
-    return idx, normals, intercepts
-end
-
-# The one isotropy gate for the PLIC reconstruction: `generate_mesh` is the only entry point that
-# can afford to throw, since `cut_cell_moments` has to stay launchable from device code.
+# The one isotropy gate for the PLIC reconstruction: the cache's `allocate_cache` and
+# `update_cache!` can afford to throw, where the per-cell fit has to stay launchable from device
+# code.
 @noinline function _require_isotropic(grid::CartesianGrid)
     CartesianMeshes.is_isotropic(grid) || throw(ArgumentError(
         "PLICCutCell needs an isotropic grid (equal cell size on every axis), got grid.d = $(Tuple(grid.d))"))
     return nothing
 end
 
-
 """
-    extract_surface_plic(normals, intercepts, cell_indices, grid::CartesianGrid{2}) -> Mesh{2}
+    extract_surface_plic(normals, intercepts, cell_indices, grid::CartesianGrid{2}; min_tri_area_fraction=1e-4) -> Mesh{2}
 
 The PLIC interface over `cell_indices` as a `MeshLibrary.Mesh{2}` of `Line` elements: one segment
 per cell, clipped from that cell's plane by `CartesianMeshes.cell_plane_clip` and mapped into
 `grid`'s frame. The half of [`generate_mesh`](@ref) that fits nothing itself -- a VOF solver
 holding planes of its own passes them straight in.
 
-- `cell_indices` -- the cells to draw, as `CartesianIndex{2}`es into `grid`, already compacted.
-  Which cells those are is the caller's business: `generate_mesh` passes the cut cells its `tol`
-  picked out, a VOF solver its interfacial cells. Nothing here re-tests them, and a plane that
-  misses its cell entirely produces a degenerate segment rather than being dropped.
-- `normals`/`intercepts` -- that plane, one entry per entry of `cell_indices` and **not** per grid
-  cell, in that cell's own unit-cell frame, which is the frame `cell_plane_clip` works in.
+- `cell_indices` -- the cells to draw, as `CartesianIndex{2}`es into `grid`. Which cells those are
+  is the caller's business: `generate_mesh` passes every cell, a VOF solver its interfacial cells.
+  A plane that does not cross its cell (misses it, or touches one corner) comes back from
+  `cell_plane_clip` as a zero-length segment rather than a stray one.
+- `normals`/`intercepts` -- that plane, one entry per entry of `cell_indices` and not per grid cell,
+  in that cell's own unit-cell frame, the frame `cell_plane_clip` works in.
+- `min_tri_area_fraction` -- drops a segment shorter than that fraction of a cell edge
+  (`minimum(grid.d)`), the 2D counterpart of the 3D method's triangle area against a cell face. At
+  the default that removes the zero-length segments above and roundoff slivers; `0` keeps one
+  segment per entry.
 
 Two nodes per element, never shared between elements: each plane was fitted from one cell with no
-reference to its neighbours, so the surface is a field of disconnected shards and there is
-deliberately no merge pass. The element type comes from `normals`/`intercepts`, with `grid`
-converted to match, so a `Float32` field is not widened by a `Float64` grid.
+reference to its neighbours, so the surface is a field of disconnected shards with deliberately no
+merge pass. The element type comes from `normals`/`intercepts`, with `grid` converted to match, so
+a `Float32` field is not widened by a `Float64` grid.
 
 The clip runs as a `KernelAbstractions` kernel over `cell_indices`, on whatever backend they live
 on, but the `Mesh` it fills is host-resident, so the inputs must be host arrays.
 """
 function extract_surface_plic(normals, intercepts, cell_indices::AbstractVector{CartesianIndex{2}},
-                              grid::CartesianGrid{2})
+                              grid::CartesianGrid{2}; min_tri_area_fraction::Real=1e-4)
     T = float(promote_type(eltype(eltype(normals)), eltype(intercepts)))
     g = convert(CartesianGrid{2,T}, grid)
 
@@ -136,21 +80,23 @@ function extract_surface_plic(normals, intercepts, cell_indices::AbstractVector{
     # interface to draw -- but an empty `ndrange` is not a launch, so it returns an empty mesh
     # rather than reaching the kernel.
     n_interface = length(cell_indices)
-    nodes = Vector{Point{2,T}}(undef, 2 * n_interface)
+    ends = Vector{Point{2,T}}(undef, 2 * n_interface)
     if n_interface > 0
         backend = get_backend(normals)
-        plic_clip_kernel!(backend, 64)(nodes, cell_indices, normals, intercepts, g, g.d[1], g.d[2];
+        plic_clip_kernel!(backend, 64)(ends, cell_indices, normals, intercepts, g, g.d[1], g.d[2];
                                        ndrange=n_interface)
     end
 
-    elements = [Line(2k - 1, 2k) for k in 1:n_interface]
+    min_length = min_tri_area_fraction * T(minimum(g.d))
+    kept = [k for k in 1:n_interface if norm(ends[2k].coord - ends[2k-1].coord) >= min_length]
+    nodes = [ends[2k - 1 + s] for k in kept for s in 0:1]
+    elements = [Line(2j - 1, 2j) for j in eachindex(kept)]
 
     return Mesh(nodes, elements)
 end
 
 """
-One thread per entry of `cell_indices` -- the already-compacted list, not one thread per grid cell.
-`nodes[2k-1]`/`nodes[2k]` are cell `k`'s two endpoints, exactly the pair `Line(2k-1, 2k)` joins, so
+One thread per entry of `cell_indices`. `nodes[2k-1]`/`nodes[2k]` are cell `k`'s two endpoints, so
 each thread writes only its own two slots and no atomics are needed. `normals`/`intercepts` are
 indexed by `k`; `cell_indices[k]` is needed only for the cell-local to world mapping.
 """

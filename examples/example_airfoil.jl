@@ -30,8 +30,9 @@ write_vtk(mesh, joinpath(outdir, "airfoil_mesh"))
 # Marching cubes extraction
 ms = MarchingSquaresCutCell()
 grid = bounding_grid(geo; N=100)
+ms_cache = update_cache!(allocate_cache(grid, ms), geo, grid)
 # `generate_mesh` is qualified because PAGE exports one too (used above for the airfoil itself).
-write_vtk(MeshLibrary.generate_mesh(geo, grid, ms), joinpath(outdir, "airfoil_contour"))
+write_vtk(MeshLibrary.generate_mesh(ms_cache, grid), joinpath(outdir, "airfoil_contour"))
 
 # ==================================================================================
 # Polyline clipping: exact cut cells straight from the line mesh, no SDF
@@ -51,10 +52,10 @@ cache = allocate_cache(pgrid, pc)
 update_cache!(cache, mesh, pgrid)
 println(CutCellMethods.cut_cell_report(cache.cells))
 
-# The walls the cut used, as a line mesh wound like the airfoil, so its normals point into the
-# fluid. (`CutCellMethods.interface_mesh(cache, pgrid)` reads the same walls off the cache without
-# cutting again.)
-walls = MeshLibrary.generate_mesh(mesh, pgrid, pc)
+# The walls the cut used, read off the cache as a line mesh wound like the airfoil, so its normals
+# point into the fluid. (`CutCellMethods.interface_mesh(cache, pgrid)` also gives each wall's cell
+# and region.)
+walls = MeshLibrary.generate_mesh(cache, pgrid)
 write_vtk(walls, joinpath(outdir, "airfoil_walls"); write_normals=true)
 
 # Everything the cache holds, for ParaView: cells, walls, each fluid region's loop, edge apertures.

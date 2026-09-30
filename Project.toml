@@ -1,6 +1,6 @@
 name = "CutCellMethods"
 uuid = "844582fc-e8cc-4c04-acf7-8b8ea17ba2c5"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Mark Lau <mark@tidalflight.com>"]
 
 [deps]
@@ -24,10 +24,10 @@ ExactPredicates = "2.2 - 2"
 KernelAbstractions = "0.9.43 - 0.9"
 LinearAlgebra = "1.0.0 - 1"
 MarchingCubes = "0.1.11 - 0.1"
-MeshLibrary = "0.4.3 - 0.4"
+MeshLibrary = "0.4.5 - 0.4"
 Polyester = "0.7.19 - 0.7"
 Reexport = "1.2.2 - 1"
-SDFLibrary = "0.10.1 - 0.10"
+SDFLibrary = "0.10.5 - 0.10"
 StaticArrays = "1.9.22 - 1"
 StructArrays = "0.7.3 - 0.7"
 

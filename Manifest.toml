@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "a587317a222f0a8ce3519b4ddf99388794150d5e"
+project_hash = "73aae1c1236efa09d395740a417513fc9cd013db"
 
 [[deps.ADTypes]]
 deps = ["PrecompileTools"]
@@ -318,7 +318,7 @@ version = "4.2.0"
 deps = ["Adapt", "CartesianMeshes", "ExactPredicates", "KernelAbstractions", "LinearAlgebra", "MarchingCubes", "MeshLibrary", "Polyester", "Reexport", "SDFLibrary", "StaticArrays", "StructArrays"]
 path = "."
 uuid = "844582fc-e8cc-4c04-acf7-8b8ea17ba2c5"
-version = "0.2.0"
+version = "0.3.0"
 
 [[deps.DataAPI]]
 git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
@@ -970,9 +970,9 @@ version = "0.5.5"
 
 [[deps.MeshLibrary]]
 deps = ["AbaqusReader", "Adapt", "Atomix", "DataInterpolations", "FerriteGmsh", "FerriteMeshParser", "FileIO", "GeometryBasics", "LinearAlgebra", "MathUtilities", "MeshIO", "Meshes", "Polyester", "RecipesBase", "Reexport", "StaticArrays", "StructArrays", "UnPack", "WriteVTK"]
-git-tree-sha1 = "ea06be4f4a79c01f38ab8a2e6d7bc9e8eade051a"
+git-tree-sha1 = "e3e251bb1cc51722a81b62102cbdd167ad8c3772"
 uuid = "2a0e3053-d7ad-441e-be9f-5563ad5a0828"
-version = "0.4.3"
+version = "0.4.5"
 
 [[deps.Meshes]]
 deps = ["Bessels", "CircularArrays", "Colorfy", "CoordRefSystems", "DelaunayTriangulation", "DifferentiationInterface", "Distances", "ForwardDiff", "HAdaptiveIntegration", "IntegrationInterface", "LinearAlgebra", "NearestNeighbors", "PrecompileTools", "Random", "Rotations", "ScopedValues", "SparseArrays", "StaticArrays", "StatsBase", "TiledIteration", "TransformsBase", "Unitful"]
@@ -1203,9 +1203,9 @@ version = "7.0.11+0"
 
 [[deps.SDFLibrary]]
 deps = ["Adapt", "Atomix", "CartesianMeshes", "CoordinateFrames", "LinearAlgebra", "MeshLibrary", "Polyester", "Reexport", "StaticArrays", "StructArrays", "UnPack"]
-git-tree-sha1 = "0b03324b5faf48756788d822f3bbb39d86f796cb"
+git-tree-sha1 = "eab17fe73b6470b910b637c1a2849f45e09ce0e6"
 uuid = "799a1229-100c-4135-9c4d-adbcd2eae49f"
-version = "0.10.2"
+version = "0.10.5"
 
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
